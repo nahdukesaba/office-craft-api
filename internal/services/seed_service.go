@@ -94,7 +94,7 @@ func (s *SeedService) seedAdmin(ctx context.Context) error {
 		return fmt.Errorf("supabase admin API did not return a user id: %s", string(raw))
 	}
 
-	if _, err := s.users.Upsert(ctx, created.ID, created.Email, s.cfg.SeedAdminFullName, models.RoleAdmin); err != nil {
+	if _, err := s.users.Upsert(ctx, created.ID, created.Email, s.cfg.SeedAdminFullName, models.RoleAdmin, models.UserStatusApproved); err != nil {
 		return err
 	}
 

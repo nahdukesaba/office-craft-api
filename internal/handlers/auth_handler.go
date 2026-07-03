@@ -3,6 +3,7 @@ package handlers
 import (
 	"github.com/gofiber/fiber/v2"
 
+	"office-craft-api/internal/apperror"
 	"office-craft-api/internal/middleware"
 	"office-craft-api/internal/repository"
 	"office-craft-api/internal/services"
@@ -36,18 +37,18 @@ type authResponse struct {
 func (h *AuthHandler) Login(c *fiber.Ctx) error {
 	var req loginRequest
 	if err := c.BodyParser(&req); err != nil {
-		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+		return apperror.BadRequest("INVALID_BODY", "invalid request body")
 	}
 	if req.Email == "" || req.Password == "" {
-		return fiber.NewError(fiber.StatusBadRequest, "email and password are required")
+		return apperror.BadRequest("VALIDATION_ERROR", "email and password are required")
 	}
 
 	token, user, err := h.auth.Login(c.Context(), req.Email, req.Password)
 	if err != nil {
 		if ae, ok := err.(*services.AuthError); ok {
-			return fiber.NewError(ae.StatusCode, ae.Message)
+			return apperror.New(ae.StatusCode, ae.Code, ae.Message)
 		}
-		return fiber.NewError(fiber.StatusInternalServerError, "login failed")
+		return apperror.Internal("login failed")
 	}
 
 	return c.JSON(authResponse{Token: token, User: user})
@@ -56,39 +57,36 @@ func (h *AuthHandler) Login(c *fiber.Ctx) error {
 func (h *AuthHandler) Register(c *fiber.Ctx) error {
 	var req registerRequest
 	if err := c.BodyParser(&req); err != nil {
-		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+		return apperror.BadRequest("INVALID_BODY", "invalid request body")
 	}
 	if req.Email == "" || req.Password == "" || req.FullName == "" {
-		return fiber.NewError(fiber.StatusBadRequest, "email, password and fullName are required")
+		return apperror.BadRequest("VALIDATION_ERROR", "email, password and fullName are required")
 	}
 
-	token, user, err := h.auth.Register(c.Context(), req.Email, req.Password, req.FullName)
+	user, err := h.auth.Register(c.Context(), req.Email, req.Password, req.FullName)
 	if err != nil {
 		if ae, ok := err.(*services.AuthError); ok {
-			return fiber.NewError(ae.StatusCode, ae.Message)
+			return apperror.New(ae.StatusCode, ae.Code, ae.Message)
 		}
-		return fiber.NewError(fiber.StatusInternalServerError, "registration failed")
+		return apperror.Internal("registration failed")
 	}
 
-	if token == "" {
-		// Supabase project has "confirm email" enabled: no session yet.
-		return c.Status(fiber.StatusCreated).JSON(fiber.Map{
-			"message": "account created, please confirm your email before logging in",
-			"user":    user,
-		})
-	}
-
-	return c.Status(fiber.StatusCreated).JSON(authResponse{Token: token, User: user})
+	// No token is ever issued at registration - every new account needs an
+	// admin to approve it first (see PUT /users/:id/approve).
+	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
+		"message": "account created and awaiting admin approval",
+		"user":    user,
+	})
 }
 
 func (h *AuthHandler) Me(c *fiber.Ctx) error {
 	userID := middleware.UserIDFromCtx(c)
 	user, err := h.users.GetByID(c.Context(), userID)
 	if err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, "failed to load current user")
+		return apperror.Internal("failed to load current user")
 	}
 	if user == nil {
-		return fiber.NewError(fiber.StatusNotFound, "user not found")
+		return apperror.NotFound("USER_NOT_FOUND", "user not found")
 	}
 	return c.JSON(user)
 }

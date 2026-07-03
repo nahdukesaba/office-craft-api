@@ -32,8 +32,10 @@ func Setup(app *fiber.App, cfg *config.Config, pool *pgxpool.Pool) {
 	notifyHandler := handlers.NewNotifyHandler(notifySvc, bookingRepo)
 	publicHandler := handlers.NewPublicHandler(bookingRepo, resourceRepo)
 	statsHandler := handlers.NewStatsHandler(bookingRepo, resourceRepo, userRepo)
+	userHandler := handlers.NewUserHandler(userRepo)
 
-	requireAuth := middleware.RequireAuth(cfg.SupabaseJWTSecret, pool)
+	verifier := middleware.NewTokenVerifier(cfg.SupabaseJWTSecret, cfg.SupabaseURL)
+	requireAuth := middleware.RequireAuth(verifier, pool)
 	requireAdmin := middleware.RequireAdmin()
 
 	api := app.Group("/api")
@@ -83,4 +85,10 @@ func Setup(app *fiber.App, cfg *config.Config, pool *pgxpool.Pool) {
 	// -------- Stats --------
 	stats := api.Group("/stats", requireAuth, requireAdmin)
 	stats.Get("/overview", statsHandler.Overview)
+
+	// -------- Users (admin: approve/reject registrations) --------
+	users := api.Group("/users", requireAuth, requireAdmin)
+	users.Get("/", userHandler.List)
+	users.Put("/:id/approve", userHandler.Approve)
+	users.Put("/:id/reject", userHandler.Reject)
 }

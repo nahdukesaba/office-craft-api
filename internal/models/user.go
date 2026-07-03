@@ -9,6 +9,7 @@ type AppUser struct {
 	Email     string    `json:"email" db:"email"`
 	FullName  string    `json:"fullName" db:"full_name"`
 	Role      string    `json:"role" db:"role"`
+	Status    string    `json:"status" db:"status"`
 	CreatedAt time.Time `json:"createdAt" db:"created_at"`
 	UpdatedAt time.Time `json:"updatedAt" db:"updated_at"`
 }
@@ -16,4 +17,13 @@ type AppUser struct {
 const (
 	RoleUser  = "user"
 	RoleAdmin = "admin"
+)
+
+// New registrations start "pending" and need an admin to approve them
+// before they can log in or use any authenticated endpoint. "rejected" is a
+// terminal state an admin can also set.
+const (
+	UserStatusPending  = "pending"
+	UserStatusApproved = "approved"
+	UserStatusRejected = "rejected"
 )

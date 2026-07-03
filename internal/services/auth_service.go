@@ -77,7 +77,7 @@ func (s *AuthService) supabaseRequest(ctx context.Context, path string, body int
 		if msg == "" {
 			msg = "authentication request failed"
 		}
-		return nil, &AuthError{StatusCode: resp.StatusCode, Message: msg}
+		return nil, &AuthError{StatusCode: resp.StatusCode, Code: "AUTH_ERROR", Message: msg}
 	}
 
 	var out supabaseAuthResponse
@@ -87,16 +87,18 @@ func (s *AuthService) supabaseRequest(ctx context.Context, path string, body int
 	return &out, nil
 }
 
-// AuthError carries the HTTP status Supabase returned so handlers can relay it.
+// AuthError carries the HTTP status + a stable code so handlers can relay a
+// consistent { error, message } body.
 type AuthError struct {
 	StatusCode int
+	Code       string
 	Message    string
 }
 
 func (e *AuthError) Error() string { return e.Message }
 
-// Login authenticates against Supabase Auth's password grant and syncs the
-// local profile row, returning the access token and AppUser.
+// Login authenticates against Supabase Auth's password grant, then enforces
+// the admin-approval gate: only "approved" accounts get a usable token back.
 func (s *AuthService) Login(ctx context.Context, email, password string) (string, *models.AppUser, error) {
 	resp, err := s.supabaseRequest(ctx, "/token?grant_type=password", map[string]string{
 		"email":    email,
@@ -111,30 +113,42 @@ func (s *AuthService) Login(ctx context.Context, email, password string) (string
 		return "", nil, err
 	}
 	if user == nil {
-		// Profile row missing (e.g. user created directly in Supabase dashboard) -> backfill.
-		user, err = s.users.Upsert(ctx, resp.User.ID, resp.User.Email, "", models.RoleUser)
+		// Profile row missing (e.g. user created directly in Supabase
+		// dashboard, bypassing our /auth/register) -> backfill as pending,
+		// same gate as any other new account.
+		user, err = s.users.Upsert(ctx, resp.User.ID, resp.User.Email, "", models.RoleUser, models.UserStatusPending)
 		if err != nil {
 			return "", nil, err
 		}
 	}
 
+	switch user.Status {
+	case models.UserStatusPending:
+		return "", nil, &AuthError{StatusCode: 403, Code: "ACCOUNT_PENDING_APPROVAL", Message: "your account is awaiting admin approval"}
+	case models.UserStatusRejected:
+		return "", nil, &AuthError{StatusCode: 403, Code: "ACCOUNT_REJECTED", Message: "your account access request was rejected"}
+	}
+
 	return resp.AccessToken, user, nil
 }
 
-// Register creates a new Supabase Auth user and a matching app_users profile.
-func (s *AuthService) Register(ctx context.Context, email, password, fullName string) (string, *models.AppUser, error) {
+// Register creates a new Supabase Auth user and a matching app_users
+// profile with status "pending". No usable token is ever returned here,
+// regardless of whether Supabase's own email-confirmation is on or off -
+// the account still needs an admin to approve it before anyone can log in.
+func (s *AuthService) Register(ctx context.Context, email, password, fullName string) (*models.AppUser, error) {
 	resp, err := s.supabaseRequest(ctx, "/signup", map[string]string{
 		"email":    email,
 		"password": password,
 	})
 	if err != nil {
-		return "", nil, err
+		return nil, err
 	}
 
-	user, err := s.users.Upsert(ctx, resp.User.ID, resp.User.Email, fullName, models.RoleUser)
+	user, err := s.users.Upsert(ctx, resp.User.ID, resp.User.Email, fullName, models.RoleUser, models.UserStatusPending)
 	if err != nil {
-		return "", nil, err
+		return nil, err
 	}
 
-	return resp.AccessToken, user, nil
+	return user, nil
 }
