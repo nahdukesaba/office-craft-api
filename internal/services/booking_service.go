@@ -165,7 +165,35 @@ func (s *BookingService) Start(ctx context.Context, id string) (*models.Booking,
 	if !utils.WithinInclusiveDateRange(utils.TodayJakarta(), booking.StartTime, booking.EndTime) {
 		return nil, apperror.Forbidden("NOT_START_DAY", "today is not within the booking window")
 	}
+
+	// Mirrors the frontend's gate, enforced server-side too: a booking
+	// can't move to in_use without a "before" proof already on file, so
+	// hitting the API directly can't skip the photo step and leave the
+	// audit trail inconsistent.
+	hasBefore, err := s.hasProof(ctx, id, models.ProofKindBefore)
+	if err != nil {
+		return nil, err
+	}
+	if !hasBefore {
+		return nil, apperror.BadRequest("PHOTO_REQUIRED", "a 'before' proof photo is required before starting")
+	}
+
 	return s.bookings.SetStatus(ctx, id, models.BookingStatusInUse)
+}
+
+// hasProof reports whether booking id already has a recorded proof of the
+// given kind ("before" or "after").
+func (s *BookingService) hasProof(ctx context.Context, bookingID, kind string) (bool, error) {
+	proofs, err := s.proofs.ListByBooking(ctx, bookingID)
+	if err != nil {
+		return false, err
+	}
+	for _, p := range proofs {
+		if p.Kind == kind {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // Finish transitions an in_use booking to finished. Requires at least one
@@ -182,18 +210,11 @@ func (s *BookingService) Finish(ctx context.Context, id string) (*models.Booking
 		return nil, apperror.Conflict("INVALID_STATUS", "booking must be in_use before it can be finished")
 	}
 
-	proofs, err := s.proofs.ListByBooking(ctx, id)
+	hasAfter, err := s.hasProof(ctx, id, models.ProofKindAfter)
 	if err != nil {
 		return nil, err
 	}
-	hasAfterProof := false
-	for _, p := range proofs {
-		if p.Kind == models.ProofKindAfter {
-			hasAfterProof = true
-			break
-		}
-	}
-	if !hasAfterProof {
+	if !hasAfter {
 		return nil, apperror.BadRequest("PHOTO_REQUIRED", "an 'after' proof photo is required before finishing")
 	}
 
