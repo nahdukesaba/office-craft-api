@@ -1,8 +1,11 @@
 package handlers
 
 import (
+	"log"
+
 	"github.com/gofiber/fiber/v2"
 
+	"office-craft-api/internal/apperror"
 	"office-craft-api/internal/models"
 	"office-craft-api/internal/repository"
 )
@@ -27,7 +30,8 @@ func (h *ResourceHandler) List(c *fiber.Ctx) error {
 
 	items, err := h.resources.List(c.Context(), filter)
 	if err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, "failed to list resources")
+		log.Printf("resources.List: %v", err)
+		return apperror.Internal("failed to list resources")
 	}
 	if items == nil {
 		items = []models.Resource{}
@@ -38,10 +42,11 @@ func (h *ResourceHandler) List(c *fiber.Ctx) error {
 func (h *ResourceHandler) Get(c *fiber.Ctx) error {
 	res, err := h.resources.GetByID(c.Context(), c.Params("id"))
 	if err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, "failed to load resource")
+		log.Printf("resources.GetByID(%s): %v", c.Params("id"), err)
+		return apperror.Internal("failed to load resource")
 	}
 	if res == nil {
-		return fiber.NewError(fiber.StatusNotFound, "resource not found")
+		return apperror.NotFound("RESOURCE_NOT_FOUND", "resource not found")
 	}
 	return c.JSON(res)
 }
@@ -50,10 +55,10 @@ func validateResourceInput(in *models.ResourceInput) error {
 	switch in.Type {
 	case models.ResourceTypeRoom, models.ResourceTypeCar, models.ResourceTypeBike:
 	default:
-		return fiber.NewError(fiber.StatusBadRequest, "type must be one of: room, car, bike")
+		return apperror.BadRequest("VALIDATION_ERROR", "type must be one of: room, car, bike")
 	}
 	if in.Name == "" {
-		return fiber.NewError(fiber.StatusBadRequest, "name is required")
+		return apperror.BadRequest("VALIDATION_ERROR", "name is required")
 	}
 	return nil
 }
@@ -61,7 +66,7 @@ func validateResourceInput(in *models.ResourceInput) error {
 func (h *ResourceHandler) Create(c *fiber.Ctx) error {
 	var in models.ResourceInput
 	if err := c.BodyParser(&in); err != nil {
-		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+		return apperror.BadRequest("INVALID_BODY", "invalid request body")
 	}
 	if err := validateResourceInput(&in); err != nil {
 		return err
@@ -69,7 +74,8 @@ func (h *ResourceHandler) Create(c *fiber.Ctx) error {
 
 	res, err := h.resources.Create(c.Context(), in)
 	if err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, "failed to create resource")
+		log.Printf("resources.Create: %v", err)
+		return apperror.Internal("failed to create resource")
 	}
 	return c.Status(fiber.StatusCreated).JSON(res)
 }
@@ -77,7 +83,7 @@ func (h *ResourceHandler) Create(c *fiber.Ctx) error {
 func (h *ResourceHandler) Update(c *fiber.Ctx) error {
 	var in models.ResourceInput
 	if err := c.BodyParser(&in); err != nil {
-		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+		return apperror.BadRequest("INVALID_BODY", "invalid request body")
 	}
 	if err := validateResourceInput(&in); err != nil {
 		return err
@@ -85,10 +91,11 @@ func (h *ResourceHandler) Update(c *fiber.Ctx) error {
 
 	res, err := h.resources.Update(c.Context(), c.Params("id"), in)
 	if err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, "failed to update resource")
+		log.Printf("resources.Update(%s): %v", c.Params("id"), err)
+		return apperror.Internal("failed to update resource")
 	}
 	if res == nil {
-		return fiber.NewError(fiber.StatusNotFound, "resource not found")
+		return apperror.NotFound("RESOURCE_NOT_FOUND", "resource not found")
 	}
 	return c.JSON(res)
 }
@@ -96,10 +103,11 @@ func (h *ResourceHandler) Update(c *fiber.Ctx) error {
 func (h *ResourceHandler) Delete(c *fiber.Ctx) error {
 	ok, err := h.resources.Delete(c.Context(), c.Params("id"))
 	if err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, "failed to delete resource")
+		log.Printf("resources.Delete(%s): %v", c.Params("id"), err)
+		return apperror.Internal("failed to delete resource")
 	}
 	if !ok {
-		return fiber.NewError(fiber.StatusNotFound, "resource not found")
+		return apperror.NotFound("RESOURCE_NOT_FOUND", "resource not found")
 	}
 	return c.SendStatus(fiber.StatusNoContent)
 }

@@ -79,6 +79,12 @@ func errorHandler(c *fiber.Ctx, err error) error {
 		})
 	}
 
+	// Anything that reaches here is an unwrapped Go error (typically a raw
+	// DB/repository error a handler didn't convert to an apperror). Log it
+	// so a bug like this is never silent again - the response body stays
+	// generic on purpose, but the real cause is now always in the server log.
+	log.Printf("unhandled error on %s %s: %v", c.Method(), c.OriginalURL(), err)
+
 	return c.Status(fiber.StatusInternalServerError).JSON(apperror.AppError{
 		Code:    "INTERNAL_ERROR",
 		Message: "internal server error",

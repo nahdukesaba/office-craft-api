@@ -71,16 +71,26 @@ func (r *BookingRepository) FindOverlapping(ctx context.Context, tx pgx.Tx, reso
 		  AND b.status = ANY($2)
 		  AND b.start_time < $4
 		  AND b.end_time > $3
-		  AND ($5 = '' OR b.id != $5::uuid)
+		  AND ($5::uuid IS NULL OR b.id != $5::uuid)
 		ORDER BY b.start_time ASC
 	`, bookingColumns)
+
+	// Bind SQL NULL rather than "" when there's nothing to exclude - binding
+	// "" would force Postgres to parse it as a uuid literal (since $5 is
+	// also used with an explicit ::uuid cast below) before the OR ever gets
+	// a chance to short-circuit, which fails with "invalid input syntax for
+	// type uuid".
+	var excludeParam interface{}
+	if excludeBookingID != "" {
+		excludeParam = excludeBookingID
+	}
 
 	var rows pgx.Rows
 	var err error
 	if tx != nil {
-		rows, err = tx.Query(ctx, query, resourceID, statuses, start, end, excludeBookingID)
+		rows, err = tx.Query(ctx, query, resourceID, statuses, start, end, excludeParam)
 	} else {
-		rows, err = r.pool.Query(ctx, query, resourceID, statuses, start, end, excludeBookingID)
+		rows, err = r.pool.Query(ctx, query, resourceID, statuses, start, end, excludeParam)
 	}
 	if err != nil {
 		return nil, err
@@ -100,7 +110,7 @@ func (r *BookingRepository) FindOverlapping(ctx context.Context, tx pgx.Tx, reso
 
 func (r *BookingRepository) Create(ctx context.Context, userID string, in models.BookingInput) (*models.Booking, error) {
 	query := fmt.Sprintf(`
-		INSERT INTO public.bookings (resource_id, user_id, start_time, end_time, status, purpose)
+		INSERT INTO public.bookings AS b (resource_id, user_id, start_time, end_time, status, purpose)
 		VALUES ($1, $2, $3, $4, 'pending', $5)
 		RETURNING %s
 	`, bookingColumns)
@@ -131,9 +141,9 @@ func (r *BookingRepository) SetStatus(ctx context.Context, id, status string) (*
 // revoke, and internally for auto-reject).
 func (r *BookingRepository) SetStatusWithNotes(ctx context.Context, id, status, adminNotes string) (*models.Booking, error) {
 	query := fmt.Sprintf(`
-		UPDATE public.bookings
+		UPDATE public.bookings AS b
 		SET status = $1, admin_notes = CASE WHEN $2 = '' THEN admin_notes ELSE $2 END
-		WHERE id = $3
+		WHERE b.id = $3
 		RETURNING %s
 	`, bookingColumns)
 	row := r.pool.QueryRow(ctx, query, status, adminNotes, id)
@@ -181,7 +191,7 @@ func (r *BookingRepository) ApproveWithAutoReject(ctx context.Context, id string
 	}
 
 	updateQuery := fmt.Sprintf(`
-		UPDATE public.bookings SET status = 'approved' WHERE id = $1
+		UPDATE public.bookings AS b SET status = 'approved' WHERE b.id = $1
 		RETURNING %s
 	`, bookingColumns)
 	row = tx.QueryRow(ctx, updateQuery, id)

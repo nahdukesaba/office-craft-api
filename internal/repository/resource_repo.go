@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -32,15 +33,37 @@ const resourceColumns = `
 
 func scanResource(row pgx.Row) (*models.Resource, error) {
 	var r models.Resource
-	var amenities []string
+	var amenitiesRaw []byte
 	if err := row.Scan(
 		&r.ID, &r.Type, &r.Name, &r.Description, &r.Location, &r.PhotoURL, &r.IsAvailable,
-		&r.Capacity, &amenities, &r.LicensePlate, &r.Seats, &r.FuelType, &r.CreatedAt, &r.UpdatedAt,
+		&r.Capacity, &amenitiesRaw, &r.LicensePlate, &r.Seats, &r.FuelType, &r.CreatedAt, &r.UpdatedAt,
 	); err != nil {
 		return nil, err
 	}
+	var amenities []string
+	if len(amenitiesRaw) > 0 {
+		if err := json.Unmarshal(amenitiesRaw, &amenities); err != nil {
+			return nil, fmt.Errorf("decoding amenities jsonb: %w", err)
+		}
+	}
 	r.Amenities = amenities
 	return &r, nil
+}
+
+// amenitiesJSON marshals amenities to a JSON array string. pgx has no
+// built-in way to know a Go []string parameter should be encoded as JSON
+// rather than a Postgres text[] array literal, so we do it explicitly and
+// pass the result as a plain string - Postgres then does its normal
+// text -> jsonb assignment cast on INSERT/UPDATE.
+func amenitiesJSON(amenities []string) (string, error) {
+	if amenities == nil {
+		amenities = []string{}
+	}
+	b, err := json.Marshal(amenities)
+	if err != nil {
+		return "", fmt.Errorf("encoding amenities: %w", err)
+	}
+	return string(b), nil
 }
 
 func (r *ResourceRepository) List(ctx context.Context, f ResourceFilter) ([]models.Resource, error) {
@@ -100,9 +123,9 @@ func (r *ResourceRepository) Create(ctx context.Context, in models.ResourceInput
 	if in.IsAvailable != nil {
 		isAvailable = *in.IsAvailable
 	}
-	amenities := in.Amenities
-	if amenities == nil {
-		amenities = []string{}
+	amenities, err := amenitiesJSON(in.Amenities)
+	if err != nil {
+		return nil, err
 	}
 
 	query := fmt.Sprintf(`
@@ -124,9 +147,9 @@ func (r *ResourceRepository) Update(ctx context.Context, id string, in models.Re
 	if in.IsAvailable != nil {
 		isAvailable = *in.IsAvailable
 	}
-	amenities := in.Amenities
-	if amenities == nil {
-		amenities = []string{}
+	amenities, err := amenitiesJSON(in.Amenities)
+	if err != nil {
+		return nil, err
 	}
 
 	query := fmt.Sprintf(`
