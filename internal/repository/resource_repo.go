@@ -67,7 +67,7 @@ func amenitiesJSON(amenities []string) (string, error) {
 }
 
 func (r *ResourceRepository) List(ctx context.Context, f ResourceFilter) ([]models.Resource, error) {
-	query := fmt.Sprintf(`SELECT %s FROM public.resources WHERE 1=1`, resourceColumns)
+	query := fmt.Sprintf(`SELECT %s FROM public.resources WHERE deleted_at IS NULL`, resourceColumns)
 	args := []interface{}{}
 	argN := 1
 
@@ -106,7 +106,7 @@ func (r *ResourceRepository) List(ctx context.Context, f ResourceFilter) ([]mode
 }
 
 func (r *ResourceRepository) GetByID(ctx context.Context, id string) (*models.Resource, error) {
-	query := fmt.Sprintf(`SELECT %s FROM public.resources WHERE id = $1`, resourceColumns)
+	query := fmt.Sprintf(`SELECT %s FROM public.resources WHERE id = $1 AND deleted_at IS NULL`, resourceColumns)
 	row := r.pool.QueryRow(ctx, query, id)
 	res, err := scanResource(row)
 	if err != nil {
@@ -157,7 +157,7 @@ func (r *ResourceRepository) Update(ctx context.Context, id string, in models.Re
 			type = $1, name = $2, description = $3, location = $4, photo_url = $5,
 			is_available = $6, capacity = $7, amenities = $8, license_plate = $9,
 			seats = $10, fuel_type = $11
-		WHERE id = $12
+		WHERE id = $12 AND deleted_at IS NULL
 		RETURNING %s
 	`, resourceColumns)
 
@@ -175,8 +175,11 @@ func (r *ResourceRepository) Update(ctx context.Context, id string, in models.Re
 	return res, nil
 }
 
+// Delete soft-deletes a resource: the row stays in place (and so do every
+// booking/proof/event that ever referenced it, for audit purposes) with
+// deleted_at set, and is filtered out of every normal read from here on.
 func (r *ResourceRepository) Delete(ctx context.Context, id string) (bool, error) {
-	tag, err := r.pool.Exec(ctx, `DELETE FROM public.resources WHERE id = $1`, id)
+	tag, err := r.pool.Exec(ctx, `UPDATE public.resources SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL`, id)
 	if err != nil {
 		return false, err
 	}
@@ -185,6 +188,6 @@ func (r *ResourceRepository) Delete(ctx context.Context, id string) (bool, error
 
 func (r *ResourceRepository) Count(ctx context.Context) (int64, error) {
 	var count int64
-	err := r.pool.QueryRow(ctx, `SELECT COUNT(*) FROM public.resources`).Scan(&count)
+	err := r.pool.QueryRow(ctx, `SELECT COUNT(*) FROM public.resources WHERE deleted_at IS NULL`).Scan(&count)
 	return count, err
 }

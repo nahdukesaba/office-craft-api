@@ -72,6 +72,7 @@ func (r *BookingRepository) FindOverlapping(ctx context.Context, tx pgx.Tx, reso
 		  AND b.start_time < $4
 		  AND b.end_time > $3
 		  AND ($5::uuid IS NULL OR b.id != $5::uuid)
+		  AND b.deleted_at IS NULL
 		ORDER BY b.start_time ASC
 	`, bookingColumns)
 
@@ -119,7 +120,7 @@ func (r *BookingRepository) Create(ctx context.Context, userID string, in models
 }
 
 func (r *BookingRepository) GetByID(ctx context.Context, id string) (*models.Booking, error) {
-	query := fmt.Sprintf(`SELECT %s FROM public.bookings b WHERE b.id = $1`, bookingColumns)
+	query := fmt.Sprintf(`SELECT %s FROM public.bookings b WHERE b.id = $1 AND b.deleted_at IS NULL`, bookingColumns)
 	row := r.pool.QueryRow(ctx, query, id)
 	b, err := scanBooking(row)
 	if err != nil {
@@ -143,7 +144,7 @@ func (r *BookingRepository) SetStatusWithNotes(ctx context.Context, id, status, 
 	query := fmt.Sprintf(`
 		UPDATE public.bookings AS b
 		SET status = $1, admin_notes = CASE WHEN $2 = '' THEN admin_notes ELSE $2 END
-		WHERE b.id = $3
+		WHERE b.id = $3 AND b.deleted_at IS NULL
 		RETURNING %s
 	`, bookingColumns)
 	row := r.pool.QueryRow(ctx, query, status, adminNotes, id)
@@ -169,7 +170,7 @@ func (r *BookingRepository) ApproveWithAutoReject(ctx context.Context, id string
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 
-	lockQuery := fmt.Sprintf(`SELECT %s FROM public.bookings b WHERE b.id = $1 FOR UPDATE`, bookingColumns)
+	lockQuery := fmt.Sprintf(`SELECT %s FROM public.bookings b WHERE b.id = $1 AND b.deleted_at IS NULL FOR UPDATE`, bookingColumns)
 	row := tx.QueryRow(ctx, lockQuery, id)
 	booking, err := scanBooking(row)
 	if err != nil {
@@ -191,7 +192,7 @@ func (r *BookingRepository) ApproveWithAutoReject(ctx context.Context, id string
 	}
 
 	updateQuery := fmt.Sprintf(`
-		UPDATE public.bookings AS b SET status = 'approved' WHERE b.id = $1
+		UPDATE public.bookings AS b SET status = 'approved' WHERE b.id = $1 AND b.deleted_at IS NULL
 		RETURNING %s
 	`, bookingColumns)
 	row = tx.QueryRow(ctx, updateQuery, id)
@@ -208,7 +209,7 @@ func (r *BookingRepository) ApproveWithAutoReject(ctx context.Context, id string
 	var autoRejectedIDs []string
 	for _, p := range pendingOverlaps {
 		_, err := tx.Exec(ctx, `
-			UPDATE public.bookings SET status = 'rejected', admin_notes = $1 WHERE id = $2
+			UPDATE public.bookings SET status = 'rejected', admin_notes = $1 WHERE id = $2 AND deleted_at IS NULL
 		`, "Auto-rejected: slot approved for another request", p.ID)
 		if err != nil {
 			return nil, nil, err
@@ -224,7 +225,7 @@ func (r *BookingRepository) ApproveWithAutoReject(ctx context.Context, id string
 }
 
 func (r *BookingRepository) List(ctx context.Context, f BookingFilter) ([]models.Booking, int64, error) {
-	where := "WHERE 1=1"
+	where := "WHERE b.deleted_at IS NULL"
 	args := []interface{}{}
 	argN := 1
 
@@ -295,7 +296,7 @@ func (r *BookingRepository) List(ctx context.Context, f BookingFilter) ([]models
 // pagination, for unauthenticated calendar/availability views. Only minimal
 // fields are exposed by the handler layer.
 func (r *BookingRepository) ListPublic(ctx context.Context, resourceID string) ([]models.Booking, error) {
-	query := fmt.Sprintf(`SELECT %s FROM public.bookings b WHERE b.status IN ('pending','approved','in_use','finished')`, bookingColumns)
+	query := fmt.Sprintf(`SELECT %s FROM public.bookings b WHERE b.deleted_at IS NULL AND b.status IN ('pending','approved','in_use','finished')`, bookingColumns)
 	args := []interface{}{}
 	if resourceID != "" {
 		query += " AND b.resource_id = $1"
@@ -321,7 +322,7 @@ func (r *BookingRepository) ListPublic(ctx context.Context, resourceID string) (
 }
 
 func (r *BookingRepository) CountByStatus(ctx context.Context) (map[string]int64, error) {
-	rows, err := r.pool.Query(ctx, `SELECT status, COUNT(*) FROM public.bookings GROUP BY status`)
+	rows, err := r.pool.Query(ctx, `SELECT status, COUNT(*) FROM public.bookings WHERE deleted_at IS NULL GROUP BY status`)
 	if err != nil {
 		return nil, err
 	}
@@ -337,4 +338,15 @@ func (r *BookingRepository) CountByStatus(ctx context.Context) (map[string]int64
 		out[status] = count
 	}
 	return out, rows.Err()
+}
+
+// SoftDelete marks a booking as deleted without removing the row (or its
+// proofs/events, which remain queryable for audit purposes even though no
+// current endpoint exposes deleting a booking).
+func (r *BookingRepository) SoftDelete(ctx context.Context, id string) (bool, error) {
+	tag, err := r.pool.Exec(ctx, `UPDATE public.bookings SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL`, id)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
 }

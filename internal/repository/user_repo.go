@@ -45,7 +45,7 @@ func (r *UserRepository) Upsert(ctx context.Context, id, email, fullName, role, 
 }
 
 func (r *UserRepository) GetByID(ctx context.Context, id string) (*models.AppUser, error) {
-	row := r.pool.QueryRow(ctx, `SELECT `+userColumns+` FROM public.app_users WHERE id = $1`, id)
+	row := r.pool.QueryRow(ctx, `SELECT `+userColumns+` FROM public.app_users WHERE id = $1 AND deleted_at IS NULL`, id)
 	u, err := scanUser(row)
 	if err != nil {
 		if err == pgx.ErrNoRows {
@@ -58,16 +58,16 @@ func (r *UserRepository) GetByID(ctx context.Context, id string) (*models.AppUse
 
 func (r *UserRepository) Count(ctx context.Context) (int64, error) {
 	var count int64
-	err := r.pool.QueryRow(ctx, `SELECT COUNT(*) FROM public.app_users`).Scan(&count)
+	err := r.pool.QueryRow(ctx, `SELECT COUNT(*) FROM public.app_users WHERE deleted_at IS NULL`).Scan(&count)
 	return count, err
 }
 
 // List returns users, optionally filtered by status ("" means no filter).
 func (r *UserRepository) List(ctx context.Context, status string) ([]models.AppUser, error) {
-	query := `SELECT ` + userColumns + ` FROM public.app_users`
+	query := `SELECT ` + userColumns + ` FROM public.app_users WHERE deleted_at IS NULL`
 	args := []interface{}{}
 	if status != "" {
-		query += ` WHERE status = $1`
+		query += ` AND status = $1`
 		args = append(args, status)
 	}
 	query += ` ORDER BY created_at DESC`
@@ -92,7 +92,7 @@ func (r *UserRepository) List(ctx context.Context, status string) ([]models.AppU
 // UpdateStatus is used by the admin approve/reject endpoints.
 func (r *UserRepository) UpdateStatus(ctx context.Context, id, status string) (*models.AppUser, error) {
 	row := r.pool.QueryRow(ctx, `
-		UPDATE public.app_users SET status = $1 WHERE id = $2
+		UPDATE public.app_users SET status = $1 WHERE id = $2 AND deleted_at IS NULL
 		RETURNING `+userColumns, status, id)
 	u, err := scanUser(row)
 	if err != nil {
@@ -102,4 +102,15 @@ func (r *UserRepository) UpdateStatus(ctx context.Context, id, status string) (*
 		return nil, err
 	}
 	return u, nil
+}
+
+// SoftDelete marks a user as deleted without removing the row. No route
+// currently calls this (there's no "delete user" endpoint yet), but it's
+// here so the repository is ready if/when one is added.
+func (r *UserRepository) SoftDelete(ctx context.Context, id string) (bool, error) {
+	tag, err := r.pool.Exec(ctx, `UPDATE public.app_users SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL`, id)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
 }

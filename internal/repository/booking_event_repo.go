@@ -35,7 +35,7 @@ func (r *BookingEventRepository) ListByBooking(ctx context.Context, bookingID st
 	rows, err := r.pool.Query(ctx, `
 		SELECT id, booking_id, event_type, from_status, to_status, actor_id, notes, created_at
 		FROM public.booking_events
-		WHERE booking_id = $1
+		WHERE booking_id = $1 AND deleted_at IS NULL
 		ORDER BY created_at ASC
 	`, bookingID)
 	if err != nil {
