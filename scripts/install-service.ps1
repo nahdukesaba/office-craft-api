@@ -7,12 +7,12 @@
     Assumes nssm.exe is either on PATH or its folder is passed via -NssmPath.
 
 .EXAMPLE
-    .\install-service.ps1 -InstallDir "C:\apps\office-craft" -NssmPath "C:\tools\nssm\win64"
+    .\install-service.ps1 -InstallDir "D:\Kerja\apps\office-craft" -NssmPath "D:\Kerja\dev\nssm-2.24\nssm-2.24\win64"
 #>
 
 param(
-    [string]$ServiceName = "OfficeCraftBackend",
-    [string]$InstallDir  = "C:\apps\office-craft",
+    [string]$ServiceName = "SILAPETBackend",
+    [string]$InstallDir  = "D:\Kerja\apps\office-craft",
     [string]$ExeName     = "office-craft-api.exe",
     [string]$NssmPath    = "",
     [string]$EnvFile     = "$InstallDir\.env"

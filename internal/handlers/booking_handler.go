@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"sort"
 	"strconv"
 	"time"
 
@@ -18,11 +19,13 @@ type BookingHandler struct {
 	bookings  *repository.BookingRepository
 	resources *repository.ResourceRepository
 	users     *repository.UserRepository
+	proofs    *repository.ProofRepository
+	events    *repository.BookingEventRepository
 	svc       *services.BookingService
 }
 
-func NewBookingHandler(bookings *repository.BookingRepository, resources *repository.ResourceRepository, users *repository.UserRepository, svc *services.BookingService) *BookingHandler {
-	return &BookingHandler{bookings: bookings, resources: resources, users: users, svc: svc}
+func NewBookingHandler(bookings *repository.BookingRepository, resources *repository.ResourceRepository, users *repository.UserRepository, proofs *repository.ProofRepository, events *repository.BookingEventRepository, svc *services.BookingService) *BookingHandler {
+	return &BookingHandler{bookings: bookings, resources: resources, users: users, proofs: proofs, events: events, svc: svc}
 }
 
 func (h *BookingHandler) enrich(ctx context.Context, b models.Booking) models.BookingWithDetails {
@@ -133,7 +136,8 @@ func (h *BookingHandler) Create(c *fiber.Ctx) error {
 // Approve approves a pending booking, auto-rejecting any other pending
 // booking that overlaps the same window.
 func (h *BookingHandler) Approve(c *fiber.Ctx) error {
-	approved, autoRejectedIDs, err := h.svc.Approve(c.Context(), c.Params("id"))
+	actorID := middleware.UserIDFromCtx(c)
+	approved, autoRejectedIDs, err := h.svc.Approve(c.Context(), actorID, c.Params("id"))
 	if err != nil {
 		return err
 	}
@@ -157,7 +161,7 @@ func (h *BookingHandler) Reject(c *fiber.Ctx) error {
 	if middleware.RoleFromCtx(c) != models.RoleAdmin {
 		return apperror.Forbidden("FORBIDDEN", "admin privileges required")
 	}
-	updated, err := h.svc.Reject(c.Context(), b.ID)
+	updated, err := h.svc.Reject(c.Context(), middleware.UserIDFromCtx(c), b.ID)
 	if err != nil {
 		return err
 	}
@@ -175,7 +179,7 @@ func (h *BookingHandler) Cancel(c *fiber.Ctx) error {
 	if !h.canAccess(c, b) {
 		return apperror.Forbidden("FORBIDDEN", "you do not have access to this booking")
 	}
-	updated, err := h.svc.Cancel(c.Context(), b.ID)
+	updated, err := h.svc.Cancel(c.Context(), middleware.UserIDFromCtx(c), b.ID)
 	if err != nil {
 		return err
 	}
@@ -187,13 +191,10 @@ func (h *BookingHandler) Revoke(c *fiber.Ctx) error {
 	var in models.RevokeInput
 	_ = c.BodyParser(&in) // body is optional
 
-	updated, err := h.svc.Revoke(c.Context(), c.Params("id"), in.AdminNotes, in.Reason)
+	updated, err := h.svc.Revoke(c.Context(), middleware.UserIDFromCtx(c), c.Params("id"), in.AdminNotes, in.Reason)
 	if err != nil {
 		return err
 	}
-
-	// Best-effort notification to the owner; failures here shouldn't block
-	// the revoke itself from succeeding.
 	return c.JSON(h.enrich(c.Context(), *updated))
 }
 
@@ -209,7 +210,7 @@ func (h *BookingHandler) Start(c *fiber.Ctx) error {
 	if !h.canAccess(c, b) {
 		return apperror.Forbidden("FORBIDDEN", "you do not have access to this booking")
 	}
-	updated, err := h.svc.Start(c.Context(), b.ID)
+	updated, err := h.svc.Start(c.Context(), middleware.UserIDFromCtx(c), b.ID)
 	if err != nil {
 		return err
 	}
@@ -228,9 +229,84 @@ func (h *BookingHandler) Finish(c *fiber.Ctx) error {
 	if !h.canAccess(c, b) {
 		return apperror.Forbidden("FORBIDDEN", "you do not have access to this booking")
 	}
-	updated, err := h.svc.Finish(c.Context(), b.ID)
+	updated, err := h.svc.Finish(c.Context(), middleware.UserIDFromCtx(c), b.ID)
 	if err != nil {
 		return err
 	}
 	return c.JSON(h.enrich(c.Context(), *updated))
+}
+
+// History returns a booking's full audit trail - every status change plus
+// every proof upload - merged into a single chronological timeline.
+func (h *BookingHandler) History(c *fiber.Ctx) error {
+	b, err := h.bookings.GetByID(c.Context(), c.Params("id"))
+	if err != nil {
+		return apperror.Internal("failed to load booking")
+	}
+	if b == nil {
+		return apperror.NotFound("BOOKING_NOT_FOUND", "booking not found")
+	}
+	if !h.canAccess(c, b) {
+		return apperror.Forbidden("FORBIDDEN", "you do not have access to this booking")
+	}
+
+	events, err := h.events.ListByBooking(c.Context(), b.ID)
+	if err != nil {
+		return apperror.Internal("failed to load booking history")
+	}
+	proofs, err := h.proofs.ListByBooking(c.Context(), b.ID)
+	if err != nil {
+		return apperror.Internal("failed to load booking proofs")
+	}
+
+	// Cache actor/uploader lookups so a booking with many events from the
+	// same one or two people doesn't hit the DB once per entry.
+	actorCache := map[string]*models.AppUser{}
+	loadActor := func(id string) *models.AppUser {
+		if id == "" {
+			return nil
+		}
+		if u, ok := actorCache[id]; ok {
+			return u
+		}
+		u, _ := h.users.GetByID(c.Context(), id)
+		actorCache[id] = u
+		return u
+	}
+
+	timeline := make([]models.TimelineEntry, 0, len(events)+len(proofs))
+	for _, e := range events {
+		entry := models.TimelineEntry{
+			Type:       models.TimelineStatusChange,
+			Timestamp:  e.CreatedAt,
+			EventType:  e.EventType,
+			FromStatus: e.FromStatus,
+			ToStatus:   e.ToStatus,
+			Notes:      e.Notes,
+		}
+		if e.ActorID != nil {
+			entry.ActorID = e.ActorID
+			entry.Actor = loadActor(*e.ActorID)
+		}
+		timeline = append(timeline, entry)
+	}
+	for _, p := range proofs {
+		actorID := p.UploadedBy
+		entry := models.TimelineEntry{
+			Type:      models.TimelineProofUploaded,
+			Timestamp: p.CreatedAt,
+			ActorID:   &actorID,
+			Actor:     loadActor(actorID),
+			ProofID:   p.ID,
+			ProofKind: p.Kind,
+			ProofPath: p.Path,
+		}
+		timeline = append(timeline, entry)
+	}
+
+	sort.Slice(timeline, func(i, j int) bool {
+		return timeline[i].Timestamp.Before(timeline[j].Timestamp)
+	})
+
+	return c.JSON(timeline)
 }

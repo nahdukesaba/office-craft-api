@@ -20,14 +20,22 @@ type BookingService struct {
 	resources *repository.ResourceRepository
 	users     *repository.UserRepository
 	proofs    *repository.ProofRepository
+	events    *repository.BookingEventRepository
 }
 
-func NewBookingService(bookings *repository.BookingRepository, resources *repository.ResourceRepository, users *repository.UserRepository, proofs *repository.ProofRepository) *BookingService {
-	return &BookingService{bookings: bookings, resources: resources, users: users, proofs: proofs}
+func NewBookingService(bookings *repository.BookingRepository, resources *repository.ResourceRepository, users *repository.UserRepository, proofs *repository.ProofRepository, events *repository.BookingEventRepository) *BookingService {
+	return &BookingService{bookings: bookings, resources: resources, users: users, proofs: proofs, events: events}
 }
 
 func isOnInterval(t time.Time) bool {
 	return t.Minute()%30 == 0 && t.Second() == 0 && t.Nanosecond() == 0
+}
+
+// recordEvent writes to the audit trail and logs (but does not fail the
+// request on) any write error - losing an audit-log write is not a reason
+// to roll back or fail a booking action that already succeeded.
+func (s *BookingService) recordEvent(ctx context.Context, bookingID, eventType string, fromStatus *string, toStatus, actorID, notes string) {
+	_ = s.events.Create(ctx, bookingID, eventType, fromStatus, toStatus, actorID, notes)
 }
 
 // buildConflictDetail loads the booking owner's name to populate the
@@ -90,13 +98,18 @@ func (s *BookingService) Create(ctx context.Context, userID string, in models.Bo
 	if err := s.Validate(ctx, in); err != nil {
 		return nil, err
 	}
-	return s.bookings.Create(ctx, userID, in)
+	booking, err := s.bookings.Create(ctx, userID, in)
+	if err != nil {
+		return nil, err
+	}
+	s.recordEvent(ctx, booking.ID, models.EventCreated, nil, models.BookingStatusPending, userID, "")
+	return booking, nil
 }
 
 // Approve approves a pending booking and auto-rejects any other pending
 // booking that overlaps the same window. Returns the approved booking and
 // the ids of anything auto-rejected.
-func (s *BookingService) Approve(ctx context.Context, id string) (*models.Booking, []string, error) {
+func (s *BookingService) Approve(ctx context.Context, actorID, id string) (*models.Booking, []string, error) {
 	booking, err := s.bookings.GetByID(ctx, id)
 	if err != nil {
 		return nil, nil, err
@@ -124,34 +137,39 @@ func (s *BookingService) Approve(ctx context.Context, id string) (*models.Bookin
 		return nil, nil, apperror.NotFound("BOOKING_NOT_FOUND", "booking not found")
 	}
 
+	s.recordEvent(ctx, approved.ID, models.EventApproved, strPtr(models.BookingStatusPending), models.BookingStatusApproved, actorID, "")
+	for _, rejectedID := range autoRejectedIDs {
+		s.recordEvent(ctx, rejectedID, models.EventAutoRejected, strPtr(models.BookingStatusPending), models.BookingStatusRejected, actorID, "Auto-rejected: slot approved for another request")
+	}
+
 	return approved, autoRejectedIDs, nil
 }
 
 // Reject transitions a pending booking to rejected.
-func (s *BookingService) Reject(ctx context.Context, id string) (*models.Booking, error) {
-	return s.transition(ctx, id, []string{models.BookingStatusPending}, models.BookingStatusRejected, "")
+func (s *BookingService) Reject(ctx context.Context, actorID, id string) (*models.Booking, error) {
+	return s.transition(ctx, actorID, id, []string{models.BookingStatusPending}, models.BookingStatusRejected, models.EventRejected, "")
 }
 
 // Cancel transitions a pending or approved booking to cancelled.
-func (s *BookingService) Cancel(ctx context.Context, id string) (*models.Booking, error) {
-	return s.transition(ctx, id, []string{models.BookingStatusPending, models.BookingStatusApproved}, models.BookingStatusCancelled, "")
+func (s *BookingService) Cancel(ctx context.Context, actorID, id string) (*models.Booking, error) {
+	return s.transition(ctx, actorID, id, []string{models.BookingStatusPending, models.BookingStatusApproved}, models.BookingStatusCancelled, models.EventCancelled, "")
 }
 
 // Revoke transitions an approved/in_use booking to cancelled, as an admin
 // override, stamping admin_notes with the supplied reason.
-func (s *BookingService) Revoke(ctx context.Context, id, adminNotes, reason string) (*models.Booking, error) {
+func (s *BookingService) Revoke(ctx context.Context, actorID, id, adminNotes, reason string) (*models.Booking, error) {
 	notes := "Revoked by admin"
 	if adminNotes != "" {
 		notes = "Revoked by admin: " + adminNotes
 	} else if reason != "" {
 		notes = "Revoked by admin: " + reason
 	}
-	return s.transition(ctx, id, []string{models.BookingStatusApproved, models.BookingStatusInUse}, models.BookingStatusCancelled, notes)
+	return s.transition(ctx, actorID, id, []string{models.BookingStatusApproved, models.BookingStatusInUse}, models.BookingStatusCancelled, models.EventRevoked, notes)
 }
 
 // Start transitions an approved booking to in_use. Only allowed if today
 // (Asia/Jakarta) falls within [date, endDate].
-func (s *BookingService) Start(ctx context.Context, id string) (*models.Booking, error) {
+func (s *BookingService) Start(ctx context.Context, actorID, id string) (*models.Booking, error) {
 	booking, err := s.bookings.GetByID(ctx, id)
 	if err != nil {
 		return nil, err
@@ -178,7 +196,12 @@ func (s *BookingService) Start(ctx context.Context, id string) (*models.Booking,
 		return nil, apperror.BadRequest("PHOTO_REQUIRED", "a 'before' proof photo is required before starting")
 	}
 
-	return s.bookings.SetStatus(ctx, id, models.BookingStatusInUse)
+	updated, err := s.bookings.SetStatus(ctx, id, models.BookingStatusInUse)
+	if err != nil {
+		return nil, err
+	}
+	s.recordEvent(ctx, id, models.EventStarted, strPtr(models.BookingStatusApproved), models.BookingStatusInUse, actorID, "")
+	return updated, nil
 }
 
 // hasProof reports whether booking id already has a recorded proof of the
@@ -198,7 +221,7 @@ func (s *BookingService) hasProof(ctx context.Context, bookingID, kind string) (
 
 // Finish transitions an in_use booking to finished. Requires at least one
 // "after" proof photo to already be recorded.
-func (s *BookingService) Finish(ctx context.Context, id string) (*models.Booking, error) {
+func (s *BookingService) Finish(ctx context.Context, actorID, id string) (*models.Booking, error) {
 	booking, err := s.bookings.GetByID(ctx, id)
 	if err != nil {
 		return nil, err
@@ -218,13 +241,18 @@ func (s *BookingService) Finish(ctx context.Context, id string) (*models.Booking
 		return nil, apperror.BadRequest("PHOTO_REQUIRED", "an 'after' proof photo is required before finishing")
 	}
 
-	return s.bookings.SetStatus(ctx, id, models.BookingStatusFinished)
+	updated, err := s.bookings.SetStatus(ctx, id, models.BookingStatusFinished)
+	if err != nil {
+		return nil, err
+	}
+	s.recordEvent(ctx, id, models.EventFinished, strPtr(models.BookingStatusInUse), models.BookingStatusFinished, actorID, "")
+	return updated, nil
 }
 
 // transition is a small shared helper for the simple, non-transactional
 // status changes (reject/cancel/revoke) that only need a "current status
-// must be one of X" precondition.
-func (s *BookingService) transition(ctx context.Context, id string, allowedFrom []string, newStatus, adminNotes string) (*models.Booking, error) {
+// must be one of X" precondition. It also writes the matching audit event.
+func (s *BookingService) transition(ctx context.Context, actorID, id string, allowedFrom []string, newStatus, eventType, adminNotes string) (*models.Booking, error) {
 	booking, err := s.bookings.GetByID(ctx, id)
 	if err != nil {
 		return nil, err
@@ -244,5 +272,11 @@ func (s *BookingService) transition(ctx context.Context, id string, allowedFrom 
 		return nil, apperror.Conflict("INVALID_STATUS", "booking status "+booking.Status+" cannot transition to "+newStatus)
 	}
 
-	return s.bookings.SetStatusWithNotes(ctx, id, newStatus, adminNotes)
+	updated, err := s.bookings.SetStatusWithNotes(ctx, id, newStatus, adminNotes)
+	if err != nil {
+		return nil, err
+	}
+	fromStatus := booking.Status
+	s.recordEvent(ctx, id, eventType, &fromStatus, newStatus, actorID, adminNotes)
+	return updated, nil
 }

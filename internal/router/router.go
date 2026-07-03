@@ -17,9 +17,10 @@ func Setup(app *fiber.App, cfg *config.Config, pool *pgxpool.Pool) {
 	resourceRepo := repository.NewResourceRepository(pool)
 	bookingRepo := repository.NewBookingRepository(pool)
 	proofRepo := repository.NewProofRepository(pool)
+	eventRepo := repository.NewBookingEventRepository(pool)
 
 	authSvc := services.NewAuthService(cfg, userRepo)
-	bookingSvc := services.NewBookingService(bookingRepo, resourceRepo, userRepo, proofRepo)
+	bookingSvc := services.NewBookingService(bookingRepo, resourceRepo, userRepo, proofRepo, eventRepo)
 	proofSvc := services.NewProofService(bookingRepo)
 	// Swap services.LogNotifier{} for a real email/SMS/webhook Notifier once
 	// you have a provider - NotifyService and the handler don't need to change.
@@ -27,7 +28,7 @@ func Setup(app *fiber.App, cfg *config.Config, pool *pgxpool.Pool) {
 
 	authHandler := handlers.NewAuthHandler(authSvc, userRepo)
 	resourceHandler := handlers.NewResourceHandler(resourceRepo)
-	bookingHandler := handlers.NewBookingHandler(bookingRepo, resourceRepo, userRepo, bookingSvc)
+	bookingHandler := handlers.NewBookingHandler(bookingRepo, resourceRepo, userRepo, proofRepo, eventRepo, bookingSvc)
 	proofHandler := handlers.NewProofHandler(proofRepo, bookingRepo, proofSvc)
 	notifyHandler := handlers.NewNotifyHandler(notifySvc, bookingRepo)
 	publicHandler := handlers.NewPublicHandler(bookingRepo, resourceRepo)
@@ -77,6 +78,7 @@ func Setup(app *fiber.App, cfg *config.Config, pool *pgxpool.Pool) {
 	bookings.Put("/:id/finish", bookingHandler.Finish)
 	bookings.Put("/:id/cancel", bookingHandler.Cancel)
 	bookings.Post("/:id/notify", notifyHandler.Notify)
+	bookings.Get("/:id/history", bookingHandler.History)
 
 	// -------- Proofs (nested under bookings, still requires auth) --------
 	bookings.Get("/:bookingId/proofs", proofHandler.List)
