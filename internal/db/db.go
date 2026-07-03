@@ -9,6 +9,7 @@ import (
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"office-craft-api/internal/config"
@@ -21,6 +22,13 @@ func Connect(cfg *config.Config) (*pgxpool.Pool, error) {
 		return nil, fmt.Errorf("parsing database url: %w", err)
 	}
 	poolCfg.MaxConns = 10
+
+	// Supabase's connection pooler (pgbouncer) does not reliably support the
+	// extended query protocol / prepared statement caching that pgx uses by
+	// default. Forcing the simple protocol keeps this working whether you're
+	// pointed at the direct connection, the session pooler, or the
+	// transaction pooler.
+	poolCfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
 
 	pool, err := pgxpool.NewWithConfig(context.Background(), poolCfg)
 	if err != nil {

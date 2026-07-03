@@ -2,21 +2,12 @@ package services
 
 import (
 	"context"
-	"errors"
 	"time"
 
+	"office-craft-api/internal/apperror"
 	"office-craft-api/internal/models"
 	"office-craft-api/internal/repository"
-)
-
-var (
-	ErrInvalidInterval = errors.New("booking times must fall on 30-minute intervals")
-	ErrTooLong         = errors.New("bookings cannot exceed 4 hours")
-	ErrPastBooking     = errors.New("booking start time must be in the future")
-	ErrEndBeforeStart  = errors.New("end time must be after start time")
-	ErrResourceMissing = errors.New("resource not found")
-	ErrResourceOffline = errors.New("resource is not available for booking")
-	ErrConflict        = errors.New("resource is already booked for the requested time range")
+	"office-craft-api/internal/utils"
 )
 
 const (
@@ -27,30 +18,50 @@ const (
 type BookingService struct {
 	bookings  *repository.BookingRepository
 	resources *repository.ResourceRepository
+	users     *repository.UserRepository
+	proofs    *repository.ProofRepository
 }
 
-func NewBookingService(bookings *repository.BookingRepository, resources *repository.ResourceRepository) *BookingService {
-	return &BookingService{bookings: bookings, resources: resources}
+func NewBookingService(bookings *repository.BookingRepository, resources *repository.ResourceRepository, users *repository.UserRepository, proofs *repository.ProofRepository) *BookingService {
+	return &BookingService{bookings: bookings, resources: resources, users: users, proofs: proofs}
 }
 
 func isOnInterval(t time.Time) bool {
 	return t.Minute()%30 == 0 && t.Second() == 0 && t.Nanosecond() == 0
 }
 
-// Validate applies the business rules shared by create (and could be reused
-// by an admin "reschedule" flow in the future).
+// buildConflictDetail loads the booking owner's name to populate the
+// conflictWith payload the frontend uses for its toast.
+func (s *BookingService) buildConflictDetail(ctx context.Context, b models.Booking) models.ConflictDetail {
+	fullName := ""
+	if u, err := s.users.GetByID(ctx, b.UserID); err == nil && u != nil {
+		fullName = u.FullName
+	}
+	return models.ConflictDetail{
+		ID:           b.ID,
+		UserFullName: fullName,
+		StartTime:    b.StartTime.Format(time.RFC3339),
+		EndTime:      b.EndTime.Format(time.RFC3339),
+		Date:         b.Date,
+		EndDate:      b.EndDate,
+	}
+}
+
+// Validate applies the business rules for a new booking request. A booking
+// is only blocked by an overlapping approved/in_use/finished booking -
+// other pending requests may coexist (they get resolved at approval time).
 func (s *BookingService) Validate(ctx context.Context, in models.BookingInput) error {
 	if !in.EndTime.After(in.StartTime) {
-		return ErrEndBeforeStart
+		return apperror.BadRequest("INVALID_RANGE", "end time must be after start time")
 	}
 	if !isOnInterval(in.StartTime) || !isOnInterval(in.EndTime) {
-		return ErrInvalidInterval
+		return apperror.BadRequest("INVALID_INTERVAL", "booking times must fall on 30-minute intervals")
 	}
 	if in.EndTime.Sub(in.StartTime) > maxBookingDuration {
-		return ErrTooLong
+		return apperror.BadRequest("TOO_LONG", "bookings cannot exceed 4 hours")
 	}
 	if in.StartTime.Before(time.Now()) {
-		return ErrPastBooking
+		return apperror.BadRequest("PAST_BOOKING", "booking start time must be in the future")
 	}
 
 	resource, err := s.resources.GetByID(ctx, in.ResourceID)
@@ -58,18 +69,18 @@ func (s *BookingService) Validate(ctx context.Context, in models.BookingInput) e
 		return err
 	}
 	if resource == nil {
-		return ErrResourceMissing
+		return apperror.NotFound("RESOURCE_NOT_FOUND", "resource not found")
 	}
 	if !resource.IsAvailable {
-		return ErrResourceOffline
+		return apperror.Conflict("RESOURCE_UNAVAILABLE", "resource is not available for booking")
 	}
 
-	conflict, err := s.bookings.HasConflict(ctx, in.ResourceID, in.StartTime, in.EndTime, "")
+	conflicts, err := s.bookings.FindOverlapping(ctx, nil, in.ResourceID, in.StartTime, in.EndTime, models.StatusesBlockingNewBooking, "")
 	if err != nil {
 		return err
 	}
-	if conflict {
-		return ErrConflict
+	if len(conflicts) > 0 {
+		return apperror.WithDetails(409, "BOOKING_CONFLICT", "Slot already approved for another user", s.buildConflictDetail(ctx, conflicts[0]))
 	}
 
 	return nil
@@ -80,4 +91,137 @@ func (s *BookingService) Create(ctx context.Context, userID string, in models.Bo
 		return nil, err
 	}
 	return s.bookings.Create(ctx, userID, in)
+}
+
+// Approve approves a pending booking and auto-rejects any other pending
+// booking that overlaps the same window. Returns the approved booking and
+// the ids of anything auto-rejected.
+func (s *BookingService) Approve(ctx context.Context, id string) (*models.Booking, []string, error) {
+	booking, err := s.bookings.GetByID(ctx, id)
+	if err != nil {
+		return nil, nil, err
+	}
+	if booking == nil {
+		return nil, nil, apperror.NotFound("BOOKING_NOT_FOUND", "booking not found")
+	}
+
+	approved, autoRejectedIDs, err := s.bookings.ApproveWithAutoReject(ctx, id)
+	if err != nil {
+		switch err {
+		case repository.ErrBookingNotPending:
+			return nil, nil, apperror.Conflict("NOT_PENDING", "booking is not pending")
+		case repository.ErrApprovalConflict:
+			conflicts, cErr := s.bookings.FindOverlapping(ctx, nil, booking.ResourceID, booking.StartTime, booking.EndTime, models.StatusesBlockingNewBooking, booking.ID)
+			if cErr == nil && len(conflicts) > 0 {
+				return nil, nil, apperror.WithDetails(409, "BOOKING_CONFLICT", "Slot already approved for another user", s.buildConflictDetail(ctx, conflicts[0]))
+			}
+			return nil, nil, apperror.Conflict("BOOKING_CONFLICT", "Slot already approved for another user")
+		default:
+			return nil, nil, err
+		}
+	}
+	if approved == nil {
+		return nil, nil, apperror.NotFound("BOOKING_NOT_FOUND", "booking not found")
+	}
+
+	return approved, autoRejectedIDs, nil
+}
+
+// Reject transitions a pending booking to rejected.
+func (s *BookingService) Reject(ctx context.Context, id string) (*models.Booking, error) {
+	return s.transition(ctx, id, []string{models.BookingStatusPending}, models.BookingStatusRejected, "")
+}
+
+// Cancel transitions a pending or approved booking to cancelled.
+func (s *BookingService) Cancel(ctx context.Context, id string) (*models.Booking, error) {
+	return s.transition(ctx, id, []string{models.BookingStatusPending, models.BookingStatusApproved}, models.BookingStatusCancelled, "")
+}
+
+// Revoke transitions an approved/in_use booking to cancelled, as an admin
+// override, stamping admin_notes with the supplied reason.
+func (s *BookingService) Revoke(ctx context.Context, id, adminNotes, reason string) (*models.Booking, error) {
+	notes := "Revoked by admin"
+	if adminNotes != "" {
+		notes = "Revoked by admin: " + adminNotes
+	} else if reason != "" {
+		notes = "Revoked by admin: " + reason
+	}
+	return s.transition(ctx, id, []string{models.BookingStatusApproved, models.BookingStatusInUse}, models.BookingStatusCancelled, notes)
+}
+
+// Start transitions an approved booking to in_use. Only allowed if today
+// (Asia/Jakarta) falls within [date, endDate].
+func (s *BookingService) Start(ctx context.Context, id string) (*models.Booking, error) {
+	booking, err := s.bookings.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if booking == nil {
+		return nil, apperror.NotFound("BOOKING_NOT_FOUND", "booking not found")
+	}
+	if booking.Status != models.BookingStatusApproved {
+		return nil, apperror.Conflict("INVALID_STATUS", "booking must be approved before it can be started")
+	}
+	if !utils.WithinInclusiveDateRange(utils.TodayJakarta(), booking.StartTime, booking.EndTime) {
+		return nil, apperror.Forbidden("NOT_START_DAY", "today is not within the booking window")
+	}
+	return s.bookings.SetStatus(ctx, id, models.BookingStatusInUse)
+}
+
+// Finish transitions an in_use booking to finished. Requires at least one
+// "after" proof photo to already be recorded.
+func (s *BookingService) Finish(ctx context.Context, id string) (*models.Booking, error) {
+	booking, err := s.bookings.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if booking == nil {
+		return nil, apperror.NotFound("BOOKING_NOT_FOUND", "booking not found")
+	}
+	if booking.Status != models.BookingStatusInUse {
+		return nil, apperror.Conflict("INVALID_STATUS", "booking must be in_use before it can be finished")
+	}
+
+	proofs, err := s.proofs.ListByBooking(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	hasAfterProof := false
+	for _, p := range proofs {
+		if p.Kind == models.ProofKindAfter {
+			hasAfterProof = true
+			break
+		}
+	}
+	if !hasAfterProof {
+		return nil, apperror.BadRequest("PHOTO_REQUIRED", "an 'after' proof photo is required before finishing")
+	}
+
+	return s.bookings.SetStatus(ctx, id, models.BookingStatusFinished)
+}
+
+// transition is a small shared helper for the simple, non-transactional
+// status changes (reject/cancel/revoke) that only need a "current status
+// must be one of X" precondition.
+func (s *BookingService) transition(ctx context.Context, id string, allowedFrom []string, newStatus, adminNotes string) (*models.Booking, error) {
+	booking, err := s.bookings.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if booking == nil {
+		return nil, apperror.NotFound("BOOKING_NOT_FOUND", "booking not found")
+	}
+
+	allowed := false
+	for _, st := range allowedFrom {
+		if booking.Status == st {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		return nil, apperror.Conflict("INVALID_STATUS", "booking status "+booking.Status+" cannot transition to "+newStatus)
+	}
+
+	return s.bookings.SetStatusWithNotes(ctx, id, newStatus, adminNotes)
 }

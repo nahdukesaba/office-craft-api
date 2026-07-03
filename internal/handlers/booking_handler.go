@@ -7,6 +7,7 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 
+	"office-craft-api/internal/apperror"
 	"office-craft-api/internal/middleware"
 	"office-craft-api/internal/models"
 	"office-craft-api/internal/repository"
@@ -68,7 +69,7 @@ func (h *BookingHandler) List(c *fiber.Ctx) error {
 
 	items, total, err := h.bookings.List(c.Context(), filter)
 	if err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, "failed to list bookings")
+		return apperror.Internal("failed to list bookings")
 	}
 
 	enriched := make([]models.BookingWithDetails, 0, len(items))
@@ -101,13 +102,13 @@ func (h *BookingHandler) canAccess(c *fiber.Ctx, b *models.Booking) bool {
 func (h *BookingHandler) Get(c *fiber.Ctx) error {
 	b, err := h.bookings.GetByID(c.Context(), c.Params("id"))
 	if err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, "failed to load booking")
+		return apperror.Internal("failed to load booking")
 	}
 	if b == nil {
-		return fiber.NewError(fiber.StatusNotFound, "booking not found")
+		return apperror.NotFound("BOOKING_NOT_FOUND", "booking not found")
 	}
 	if !h.canAccess(c, b) {
-		return fiber.NewError(fiber.StatusForbidden, "you do not have access to this booking")
+		return apperror.Forbidden("FORBIDDEN", "you do not have access to this booking")
 	}
 	return c.JSON(h.enrich(c.Context(), *b))
 }
@@ -115,82 +116,121 @@ func (h *BookingHandler) Get(c *fiber.Ctx) error {
 func (h *BookingHandler) Create(c *fiber.Ctx) error {
 	var in models.BookingInput
 	if err := c.BodyParser(&in); err != nil {
-		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+		return apperror.BadRequest("INVALID_BODY", "invalid request body")
 	}
 	if in.ResourceID == "" {
-		return fiber.NewError(fiber.StatusBadRequest, "resourceId is required")
+		return apperror.BadRequest("VALIDATION_ERROR", "resourceId is required")
 	}
 
 	userID := middleware.UserIDFromCtx(c) // userId is always derived from the JWT
 	booking, err := h.svc.Create(c.Context(), userID, in)
 	if err != nil {
-		return mapBookingServiceError(err)
+		return err
 	}
 	return c.Status(fiber.StatusCreated).JSON(h.enrich(c.Context(), *booking))
 }
 
-func mapBookingServiceError(err error) error {
-	switch err {
-	case services.ErrInvalidInterval, services.ErrTooLong, services.ErrPastBooking, services.ErrEndBeforeStart:
-		return fiber.NewError(fiber.StatusBadRequest, err.Error())
-	case services.ErrResourceMissing:
-		return fiber.NewError(fiber.StatusNotFound, err.Error())
-	case services.ErrResourceOffline:
-		return fiber.NewError(fiber.StatusConflict, err.Error())
-	case services.ErrConflict:
-		return fiber.NewError(fiber.StatusConflict, err.Error())
-	default:
-		return fiber.NewError(fiber.StatusInternalServerError, "failed to create booking")
+// Approve approves a pending booking, auto-rejecting any other pending
+// booking that overlaps the same window.
+func (h *BookingHandler) Approve(c *fiber.Ctx) error {
+	approved, autoRejectedIDs, err := h.svc.Approve(c.Context(), c.Params("id"))
+	if err != nil {
+		return err
 	}
+	if autoRejectedIDs == nil {
+		autoRejectedIDs = []string{}
+	}
+	return c.JSON(models.ApproveBookingResponse{
+		Booking:         h.enrich(c.Context(), *approved),
+		AutoRejectedIDs: autoRejectedIDs,
+	})
 }
 
-func (h *BookingHandler) transition(c *fiber.Ctx, newStatus string, adminOnly bool, allowedFrom ...string) error {
+func (h *BookingHandler) Reject(c *fiber.Ctx) error {
 	b, err := h.bookings.GetByID(c.Context(), c.Params("id"))
 	if err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, "failed to load booking")
+		return apperror.Internal("failed to load booking")
 	}
 	if b == nil {
-		return fiber.NewError(fiber.StatusNotFound, "booking not found")
+		return apperror.NotFound("BOOKING_NOT_FOUND", "booking not found")
 	}
-
-	isAdmin := middleware.RoleFromCtx(c) == models.RoleAdmin
-	if adminOnly && !isAdmin {
-		return fiber.NewError(fiber.StatusForbidden, "admin privileges required")
+	if middleware.RoleFromCtx(c) != models.RoleAdmin {
+		return apperror.Forbidden("FORBIDDEN", "admin privileges required")
 	}
-	if !adminOnly && !h.canAccess(c, b) {
-		return fiber.NewError(fiber.StatusForbidden, "you do not have access to this booking")
-	}
-
-	allowed := false
-	for _, s := range allowedFrom {
-		if b.Status == s {
-			allowed = true
-			break
-		}
-	}
-	if !allowed {
-		return fiber.NewError(fiber.StatusConflict, "booking status "+b.Status+" cannot transition to "+newStatus)
-	}
-
-	updated, err := h.bookings.SetStatus(c.Context(), b.ID, newStatus)
+	updated, err := h.svc.Reject(c.Context(), b.ID)
 	if err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, "failed to update booking status")
+		return err
 	}
 	return c.JSON(h.enrich(c.Context(), *updated))
 }
 
-func (h *BookingHandler) Approve(c *fiber.Ctx) error {
-	return h.transition(c, models.BookingStatusApproved, true, models.BookingStatusPending)
-}
-
-func (h *BookingHandler) Reject(c *fiber.Ctx) error {
-	return h.transition(c, models.BookingStatusRejected, true, models.BookingStatusPending)
-}
-
-func (h *BookingHandler) Close(c *fiber.Ctx) error {
-	return h.transition(c, models.BookingStatusCompleted, true, models.BookingStatusApproved)
-}
-
 func (h *BookingHandler) Cancel(c *fiber.Ctx) error {
-	return h.transition(c, models.BookingStatusCancelled, false, models.BookingStatusPending, models.BookingStatusApproved)
+	b, err := h.bookings.GetByID(c.Context(), c.Params("id"))
+	if err != nil {
+		return apperror.Internal("failed to load booking")
+	}
+	if b == nil {
+		return apperror.NotFound("BOOKING_NOT_FOUND", "booking not found")
+	}
+	if !h.canAccess(c, b) {
+		return apperror.Forbidden("FORBIDDEN", "you do not have access to this booking")
+	}
+	updated, err := h.svc.Cancel(c.Context(), b.ID)
+	if err != nil {
+		return err
+	}
+	return c.JSON(h.enrich(c.Context(), *updated))
+}
+
+// Revoke is an admin-only override that cancels an approved/in_use booking.
+func (h *BookingHandler) Revoke(c *fiber.Ctx) error {
+	var in models.RevokeInput
+	_ = c.BodyParser(&in) // body is optional
+
+	updated, err := h.svc.Revoke(c.Context(), c.Params("id"), in.AdminNotes, in.Reason)
+	if err != nil {
+		return err
+	}
+
+	// Best-effort notification to the owner; failures here shouldn't block
+	// the revoke itself from succeeding.
+	return c.JSON(h.enrich(c.Context(), *updated))
+}
+
+// Start transitions an approved booking to in_use.
+func (h *BookingHandler) Start(c *fiber.Ctx) error {
+	b, err := h.bookings.GetByID(c.Context(), c.Params("id"))
+	if err != nil {
+		return apperror.Internal("failed to load booking")
+	}
+	if b == nil {
+		return apperror.NotFound("BOOKING_NOT_FOUND", "booking not found")
+	}
+	if !h.canAccess(c, b) {
+		return apperror.Forbidden("FORBIDDEN", "you do not have access to this booking")
+	}
+	updated, err := h.svc.Start(c.Context(), b.ID)
+	if err != nil {
+		return err
+	}
+	return c.JSON(h.enrich(c.Context(), *updated))
+}
+
+// Finish transitions an in_use booking to finished.
+func (h *BookingHandler) Finish(c *fiber.Ctx) error {
+	b, err := h.bookings.GetByID(c.Context(), c.Params("id"))
+	if err != nil {
+		return apperror.Internal("failed to load booking")
+	}
+	if b == nil {
+		return apperror.NotFound("BOOKING_NOT_FOUND", "booking not found")
+	}
+	if !h.canAccess(c, b) {
+		return apperror.Forbidden("FORBIDDEN", "you do not have access to this booking")
+	}
+	updated, err := h.svc.Finish(c.Context(), b.ID)
+	if err != nil {
+		return err
+	}
+	return c.JSON(h.enrich(c.Context(), *updated))
 }

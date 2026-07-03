@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -9,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"office-craft-api/internal/models"
+	"office-craft-api/internal/utils"
 )
 
 type BookingRepository struct {
@@ -18,6 +20,16 @@ type BookingRepository struct {
 func NewBookingRepository(pool *pgxpool.Pool) *BookingRepository {
 	return &BookingRepository{pool: pool}
 }
+
+var (
+	// ErrBookingNotPending is returned by ApproveWithAutoReject when the
+	// booking is no longer in "pending" status (e.g. a concurrent request
+	// already approved/rejected it).
+	ErrBookingNotPending = errors.New("booking is not pending")
+	// ErrApprovalConflict is returned when another approved/in_use/finished
+	// booking already overlaps the requested window.
+	ErrApprovalConflict = errors.New("resource already booked for the requested window")
+)
 
 type BookingFilter struct {
 	Status     string
@@ -30,33 +42,60 @@ type BookingFilter struct {
 }
 
 const bookingColumns = `
-	b.id, b.resource_id, b.user_id, b.start_time, b.end_time, b.status, b.purpose, b.created_at, b.updated_at
+	b.id, b.resource_id, b.user_id, b.start_time, b.end_time, b.status, b.purpose, b.admin_notes, b.created_at, b.updated_at
 `
+
+func populateDerived(b *models.Booking) {
+	b.Date = utils.DateOnlyJakarta(b.StartTime).Format("2006-01-02")
+	b.EndDate = utils.DateOnlyJakarta(b.EndTime).Format("2006-01-02")
+}
 
 func scanBooking(row pgx.Row) (*models.Booking, error) {
 	var b models.Booking
-	if err := row.Scan(&b.ID, &b.ResourceID, &b.UserID, &b.StartTime, &b.EndTime, &b.Status, &b.Purpose, &b.CreatedAt, &b.UpdatedAt); err != nil {
+	if err := row.Scan(&b.ID, &b.ResourceID, &b.UserID, &b.StartTime, &b.EndTime, &b.Status, &b.Purpose, &b.AdminNotes, &b.CreatedAt, &b.UpdatedAt); err != nil {
 		return nil, err
 	}
+	populateDerived(&b)
 	return &b, nil
 }
 
-// HasConflict returns true if an overlapping pending/approved booking exists
-// for the given resource. excludeBookingID can be empty when creating a new booking.
-func (r *BookingRepository) HasConflict(ctx context.Context, resourceID string, start, end time.Time, excludeBookingID string) (bool, error) {
-	query := `
-		SELECT EXISTS (
-			SELECT 1 FROM public.bookings
-			WHERE resource_id = $1
-			  AND status IN ('pending', 'approved')
-			  AND start_time < $3
-			  AND end_time > $2
-			  AND ($4 = '' OR id != $4::uuid)
-		)
-	`
-	var exists bool
-	err := r.pool.QueryRow(ctx, query, resourceID, start, end, excludeBookingID).Scan(&exists)
-	return exists, err
+// FindOverlapping returns bookings on resourceID whose [start,end) window
+// overlaps the given range and whose status is in statuses, optionally
+// excluding one booking id. Ordered by start_time so callers can treat the
+// first result as "the" conflicting booking. Pass a nil tx to run outside a
+// transaction.
+func (r *BookingRepository) FindOverlapping(ctx context.Context, tx pgx.Tx, resourceID string, start, end time.Time, statuses []string, excludeBookingID string) ([]models.Booking, error) {
+	query := fmt.Sprintf(`
+		SELECT %s FROM public.bookings b
+		WHERE b.resource_id = $1
+		  AND b.status = ANY($2)
+		  AND b.start_time < $4
+		  AND b.end_time > $3
+		  AND ($5 = '' OR b.id != $5::uuid)
+		ORDER BY b.start_time ASC
+	`, bookingColumns)
+
+	var rows pgx.Rows
+	var err error
+	if tx != nil {
+		rows, err = tx.Query(ctx, query, resourceID, statuses, start, end, excludeBookingID)
+	} else {
+		rows, err = r.pool.Query(ctx, query, resourceID, statuses, start, end, excludeBookingID)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []models.Booking
+	for rows.Next() {
+		b, err := scanBooking(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *b)
+	}
+	return out, rows.Err()
 }
 
 func (r *BookingRepository) Create(ctx context.Context, userID string, in models.BookingInput) (*models.Booking, error) {
@@ -82,12 +121,22 @@ func (r *BookingRepository) GetByID(ctx context.Context, id string) (*models.Boo
 	return b, nil
 }
 
+// SetStatus performs a plain, unconditional status transition (used for
+// reject/cancel, where no auto-reject fan-out or conflict re-check applies).
 func (r *BookingRepository) SetStatus(ctx context.Context, id, status string) (*models.Booking, error) {
+	return r.SetStatusWithNotes(ctx, id, status, "")
+}
+
+// SetStatusWithNotes is like SetStatus but also stamps admin_notes (used for
+// revoke, and internally for auto-reject).
+func (r *BookingRepository) SetStatusWithNotes(ctx context.Context, id, status, adminNotes string) (*models.Booking, error) {
 	query := fmt.Sprintf(`
-		UPDATE public.bookings SET status = $1 WHERE id = $2
+		UPDATE public.bookings
+		SET status = $1, admin_notes = CASE WHEN $2 = '' THEN admin_notes ELSE $2 END
+		WHERE id = $3
 		RETURNING %s
 	`, bookingColumns)
-	row := r.pool.QueryRow(ctx, query, status, id)
+	row := r.pool.QueryRow(ctx, query, status, adminNotes, id)
 	b, err := scanBooking(row)
 	if err != nil {
 		if err == pgx.ErrNoRows {
@@ -96,6 +145,72 @@ func (r *BookingRepository) SetStatus(ctx context.Context, id, status string) (*
 		return nil, err
 	}
 	return b, nil
+}
+
+// ApproveWithAutoReject atomically approves a pending booking, but only if
+// no approved/in_use/finished booking already overlaps its window. On
+// success, every other *pending* booking overlapping the same window is
+// auto-rejected with an explanatory admin_notes entry. Returns the updated
+// booking plus the ids of any auto-rejected bookings.
+func (r *BookingRepository) ApproveWithAutoReject(ctx context.Context, id string) (*models.Booking, []string, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	lockQuery := fmt.Sprintf(`SELECT %s FROM public.bookings b WHERE b.id = $1 FOR UPDATE`, bookingColumns)
+	row := tx.QueryRow(ctx, lockQuery, id)
+	booking, err := scanBooking(row)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, nil, nil
+		}
+		return nil, nil, err
+	}
+	if booking.Status != models.BookingStatusPending {
+		return nil, nil, ErrBookingNotPending
+	}
+
+	conflicts, err := r.FindOverlapping(ctx, tx, booking.ResourceID, booking.StartTime, booking.EndTime, models.StatusesBlockingNewBooking, booking.ID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(conflicts) > 0 {
+		return nil, nil, ErrApprovalConflict
+	}
+
+	updateQuery := fmt.Sprintf(`
+		UPDATE public.bookings SET status = 'approved' WHERE id = $1
+		RETURNING %s
+	`, bookingColumns)
+	row = tx.QueryRow(ctx, updateQuery, id)
+	approved, err := scanBooking(row)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	pendingOverlaps, err := r.FindOverlapping(ctx, tx, booking.ResourceID, booking.StartTime, booking.EndTime, []string{models.BookingStatusPending}, booking.ID)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var autoRejectedIDs []string
+	for _, p := range pendingOverlaps {
+		_, err := tx.Exec(ctx, `
+			UPDATE public.bookings SET status = 'rejected', admin_notes = $1 WHERE id = $2
+		`, "Auto-rejected: slot approved for another request", p.ID)
+		if err != nil {
+			return nil, nil, err
+		}
+		autoRejectedIDs = append(autoRejectedIDs, p.ID)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, nil, err
+	}
+
+	return approved, autoRejectedIDs, nil
 }
 
 func (r *BookingRepository) List(ctx context.Context, f BookingFilter) ([]models.Booking, int64, error) {
@@ -170,7 +285,7 @@ func (r *BookingRepository) List(ctx context.Context, f BookingFilter) ([]models
 // pagination, for unauthenticated calendar/availability views. Only minimal
 // fields are exposed by the handler layer.
 func (r *BookingRepository) ListPublic(ctx context.Context, resourceID string) ([]models.Booking, error) {
-	query := fmt.Sprintf(`SELECT %s FROM public.bookings b WHERE b.status IN ('pending','approved','completed')`, bookingColumns)
+	query := fmt.Sprintf(`SELECT %s FROM public.bookings b WHERE b.status IN ('pending','approved','in_use','finished')`, bookingColumns)
 	args := []interface{}{}
 	if resourceID != "" {
 		query += " AND b.resource_id = $1"

@@ -2,23 +2,37 @@ package models
 
 import "time"
 
+// Booking lifecycle: pending -> approved -> in_use -> finished, with
+// rejected/cancelled as terminal off-ramps from pending/approved/in_use.
 const (
 	BookingStatusPending   = "pending"
 	BookingStatusApproved  = "approved"
+	BookingStatusInUse     = "in_use"
+	BookingStatusFinished  = "finished"
 	BookingStatusRejected  = "rejected"
-	BookingStatusCompleted = "completed"
 	BookingStatusCancelled = "cancelled"
 )
 
-// Booking mirrors public.bookings.
+// StatusesBlockingNewBooking are the statuses that make a resource
+// unavailable for a new overlapping booking. A "pending" booking no longer
+// blocks other pending requests - only a slot that is actually spoken for
+// (approved/in_use) or was already used (finished) does.
+var StatusesBlockingNewBooking = []string{BookingStatusApproved, BookingStatusInUse, BookingStatusFinished}
+
+// Booking mirrors public.bookings. Date/EndDate are derived (Asia/Jakarta
+// calendar date of StartTime/EndTime) for display convenience - they are
+// not stored columns.
 type Booking struct {
 	ID         string    `json:"id" db:"id"`
 	ResourceID string    `json:"resourceId" db:"resource_id"`
 	UserID     string    `json:"userId" db:"user_id"`
 	StartTime  time.Time `json:"startTime" db:"start_time"`
 	EndTime    time.Time `json:"endTime" db:"end_time"`
+	Date       string    `json:"date"`
+	EndDate    string    `json:"endDate"`
 	Status     string    `json:"status" db:"status"`
 	Purpose    string    `json:"purpose" db:"purpose"`
+	AdminNotes string    `json:"adminNotes" db:"admin_notes"`
 	CreatedAt  time.Time `json:"createdAt" db:"created_at"`
 	UpdatedAt  time.Time `json:"updatedAt" db:"updated_at"`
 }
@@ -38,6 +52,28 @@ type BookingInput struct {
 	StartTime  time.Time `json:"startTime"`
 	EndTime    time.Time `json:"endTime"`
 	Purpose    string    `json:"purpose"`
+}
+
+// RevokeInput is the shape accepted on PUT /bookings/:id/revoke.
+type RevokeInput struct {
+	AdminNotes string `json:"adminNotes"`
+	Reason     string `json:"reason"`
+}
+
+// ApproveBookingResponse is returned by PUT /bookings/:id/approve.
+type ApproveBookingResponse struct {
+	Booking         BookingWithDetails `json:"booking"`
+	AutoRejectedIDs []string           `json:"autoRejectedIds"`
+}
+
+// ConflictDetail describes the booking a create/approve attempt collided with.
+type ConflictDetail struct {
+	ID           string `json:"id"`
+	UserFullName string `json:"userFullName"`
+	StartTime    string `json:"startTime"`
+	EndTime      string `json:"endTime"`
+	Date         string `json:"date"`
+	EndDate      string `json:"endDate"`
 }
 
 // PaginatedBookings is the envelope returned by GET /bookings.

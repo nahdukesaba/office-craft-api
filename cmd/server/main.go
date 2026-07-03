@@ -2,13 +2,20 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
+
+	// Embeds the IANA timezone database into the binary so Asia/Jakarta
+	// date-window checks (booking start/finish gating) work even on stripped
+	// down Windows hosts that may not have tzdata installed.
+	_ "time/tzdata"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/gofiber/fiber/v2/middleware/logger"
 	"github.com/gofiber/fiber/v2/middleware/recover"
 
+	"office-craft-api/internal/apperror"
 	"office-craft-api/internal/config"
 	"office-craft-api/internal/db"
 	"office-craft-api/internal/repository"
@@ -56,20 +63,41 @@ func main() {
 	}
 }
 
-// errorHandler ensures every error - including fiber.NewError calls scattered
-// throughout handlers - is serialized as consistent camelCase JSON.
+// errorHandler ensures every error - both apperror.AppError (the standard
+// shape: { error, message, details? }) and any plain fiber.NewError calls
+// still lying around - is serialized consistently.
 func errorHandler(c *fiber.Ctx, err error) error {
-	code := fiber.StatusInternalServerError
-	message := "internal server error"
-
-	if fe, ok := err.(*fiber.Error); ok {
-		code = fe.Code
-		message = fe.Message
+	var appErr *apperror.AppError
+	if errors.As(err, &appErr) {
+		return c.Status(appErr.Status).JSON(appErr)
 	}
 
-	return c.Status(code).JSON(fiber.Map{
-		"error":      true,
-		"message":    message,
-		"statusCode": code,
+	if fe, ok := err.(*fiber.Error); ok {
+		return c.Status(fe.Code).JSON(apperror.AppError{
+			Code:    genericCodeForStatus(fe.Code),
+			Message: fe.Message,
+		})
+	}
+
+	return c.Status(fiber.StatusInternalServerError).JSON(apperror.AppError{
+		Code:    "INTERNAL_ERROR",
+		Message: "internal server error",
 	})
+}
+
+func genericCodeForStatus(status int) string {
+	switch status {
+	case fiber.StatusBadRequest:
+		return "BAD_REQUEST"
+	case fiber.StatusUnauthorized:
+		return "UNAUTHORIZED"
+	case fiber.StatusForbidden:
+		return "FORBIDDEN"
+	case fiber.StatusNotFound:
+		return "NOT_FOUND"
+	case fiber.StatusConflict:
+		return "CONFLICT"
+	default:
+		return "ERROR"
+	}
 }

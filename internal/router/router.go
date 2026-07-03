@@ -19,12 +19,17 @@ func Setup(app *fiber.App, cfg *config.Config, pool *pgxpool.Pool) {
 	proofRepo := repository.NewProofRepository(pool)
 
 	authSvc := services.NewAuthService(cfg, userRepo)
-	bookingSvc := services.NewBookingService(bookingRepo, resourceRepo)
+	bookingSvc := services.NewBookingService(bookingRepo, resourceRepo, userRepo, proofRepo)
+	proofSvc := services.NewProofService(bookingRepo)
+	// Swap services.LogNotifier{} for a real email/SMS/webhook Notifier once
+	// you have a provider - NotifyService and the handler don't need to change.
+	notifySvc := services.NewNotifyService(bookingRepo, userRepo, services.LogNotifier{})
 
 	authHandler := handlers.NewAuthHandler(authSvc, userRepo)
 	resourceHandler := handlers.NewResourceHandler(resourceRepo)
 	bookingHandler := handlers.NewBookingHandler(bookingRepo, resourceRepo, userRepo, bookingSvc)
-	proofHandler := handlers.NewProofHandler(proofRepo, bookingRepo)
+	proofHandler := handlers.NewProofHandler(proofRepo, bookingRepo, proofSvc)
+	notifyHandler := handlers.NewNotifyHandler(notifySvc, bookingRepo)
 	publicHandler := handlers.NewPublicHandler(bookingRepo, resourceRepo)
 	statsHandler := handlers.NewStatsHandler(bookingRepo, resourceRepo, userRepo)
 
@@ -57,14 +62,19 @@ func Setup(app *fiber.App, cfg *config.Config, pool *pgxpool.Pool) {
 	resources.Delete("/:id", requireAdmin, resourceHandler.Delete)
 
 	// -------- Bookings --------
+	// Lifecycle: pending -> approved -> in_use -> finished, with
+	// rejected/cancelled as terminal off-ramps.
 	bookings := api.Group("/bookings", requireAuth)
 	bookings.Get("/", bookingHandler.List)
 	bookings.Get("/:id", bookingHandler.Get)
 	bookings.Post("/", bookingHandler.Create)
 	bookings.Put("/:id/approve", requireAdmin, bookingHandler.Approve)
 	bookings.Put("/:id/reject", requireAdmin, bookingHandler.Reject)
-	bookings.Put("/:id/close", requireAdmin, bookingHandler.Close)
+	bookings.Put("/:id/revoke", requireAdmin, bookingHandler.Revoke)
+	bookings.Put("/:id/start", bookingHandler.Start) // owner or admin, gated by date window in the service
+	bookings.Put("/:id/finish", bookingHandler.Finish)
 	bookings.Put("/:id/cancel", bookingHandler.Cancel)
+	bookings.Post("/:id/notify", notifyHandler.Notify)
 
 	// -------- Proofs (nested under bookings, still requires auth) --------
 	bookings.Get("/:bookingId/proofs", proofHandler.List)

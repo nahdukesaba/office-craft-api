@@ -1,0 +1,65 @@
+name: Build & Deploy Office-Craft API
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  build-and-deploy:
+    # This job must run on a self-hosted Windows runner that lives on (or has
+    # network access to) the target Windows 10 machine, since it stops/starts
+    # a local NSSM service and copies files onto disk directly.
+    runs-on: [self-hosted, windows]
+
+    env:
+      SERVICE_NAME: OfficeCraftBackend
+      INSTALL_DIR: C:\apps\office-craft
+      EXE_NAME: office-craft-api.exe
+      GOOS: windows
+      GOARCH: amd64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Run tests
+        run: go test ./...
+        continue-on-error: false
+
+      - name: Build Windows binary
+        run: |
+          go build -ldflags="-s -w" -o build/${{ env.EXE_NAME }} ./cmd/server
+        shell: pwsh
+
+      - name: Stage migrations alongside binary
+        run: |
+          Copy-Item -Path migrations -Destination build\migrations -Recurse -Force
+        shell: pwsh
+
+      - name: Stop service, replace binary, restart
+        run: |
+          .\scripts\deploy-update.ps1 `
+            -ServiceName $env:SERVICE_NAME `
+            -InstallDir $env:INSTALL_DIR `
+            -ExeName $env:EXE_NAME `
+            -NewBinaryPath "build\$env:EXE_NAME"
+        shell: pwsh
+
+      - name: Health check
+        run: |
+          Start-Sleep -Seconds 3
+          $response = Invoke-WebRequest -Uri "http://localhost:8080/api/health" -UseBasicParsing
+          if ($response.StatusCode -ne 200) {
+            throw "Health check failed with status $($response.StatusCode)"
+          }
+          Write-Host "Health check passed."
+        shell: pwsh

@@ -34,21 +34,3 @@ require (
 	golang.org/x/sys v0.17.0 // indirect
 	golang.org/x/text v0.14.0 // indirect
 )
-
-// NOTE: this sandbox environment cannot reach golang.org (only github.com is
-// allow-listed on its egress proxy), so golang.org/x/* modules are mirrored
-// from their canonical GitHub read-only mirrors here purely to let `go build`
-// succeed while iterating in this container. This block is safe to delete
-// once you run `go mod tidy` on a machine with normal internet access - Go
-// will simply refetch the real golang.org/x/* modules from proxy.golang.org.
-replace (
-	go.uber.org/atomic => github.com/uber-go/atomic v1.7.0
-	golang.org/x/crypto => github.com/golang/crypto v0.20.0
-	golang.org/x/net => github.com/golang/net v0.21.0
-	golang.org/x/sync => github.com/golang/sync v0.5.0
-	golang.org/x/sys => github.com/golang/sys v0.17.0
-	golang.org/x/text => github.com/golang/text v0.14.0
-	golang.org/x/tools => github.com/golang/tools v0.10.0
-	gopkg.in/check.v1 => github.com/go-check/check v0.0.0-20200902074654-038fdea0a05b
-	gopkg.in/yaml.v3 => github.com/go-yaml/yaml v0.0.0-20220521103104-8f96da9f5d5e
-)
