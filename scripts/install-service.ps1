@@ -12,9 +12,9 @@
 
 param(
     [string]$ServiceName = "SILAPETBackend",
-    [string]$InstallDir  = "D:\Kerja\apps\office-craft",
+    [string]$InstallDir  = "D:\Kerja\dev\office-craft-api",
     [string]$ExeName     = "office-craft-api.exe",
-    [string]$NssmPath    = "",
+    [string]$NssmPath    = "D:\Kerja\dev\nssm-2.24\nssm-2.24\win64",
     [string]$EnvFile     = "$InstallDir\.env"
 )
 
@@ -49,8 +49,8 @@ Write-Host "Installing service '$ServiceName' -> $exePath"
 & $nssm set $ServiceName AppRotateFiles 1
 & $nssm set $ServiceName AppRotateBytes 10485760
 & $nssm set $ServiceName Start SERVICE_AUTO_START
-& $nssm set $ServiceName DisplayName "Office-Craft API"
-& $nssm set $ServiceName Description "Golang + Fiber backend for the Office-Craft Resource Management System"
+& $nssm set $ServiceName DisplayName "SILAPET API"
+& $nssm set $ServiceName Description "Golang + Fiber backend for the SILAPET API Resource Management System"
 
 New-Item -ItemType Directory -Force -Path "$InstallDir\logs" | Out-Null
 
