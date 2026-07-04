@@ -9,14 +9,14 @@
     WhatsApp number via the foreground run (see WHATSAPP_SETUP.md step 5).
 
 .EXAMPLE
-    .\install-openwa-service.ps1 -InstallDir "D:\Kerja\dev\OpenWA" -NssmPath "D:\Kerja\dev\nssm-2.24\nssm-2.24\win64"
+    .\install-openwa-service.ps1 -InstallDir "C:\apps\OpenWA" -NssmPath "C:\tools\nssm\win64"
 #>
 
 param(
     [string]$ServiceName = "OpenWABackend",
-    [string]$InstallDir  = "D:\Kerja\dev\OpenWA",
-    [string]$NodeExe     = "C:\Program Files\nodejs\node.exe",
-    [string]$NssmPath    = "D:\Kerja\dev\nssm-2.24\nssm-2.24\win64"
+    [string]$InstallDir  = "C:\apps\OpenWA",
+    [string]$NodeExe     = "",
+    [string]$NssmPath    = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -32,10 +32,20 @@ function Resolve-Nssm {
 }
 
 function Resolve-Node {
-    if ($NodeExe -ne "" -and (Test-Path $NodeExe)) { return $NodeExe }
+    if ($NodeExe -ne "") {
+        # Be forgiving if someone points -NodeExe at the nodejs *folder*
+        # instead of node.exe itself - append it rather than silently
+        # trying to launch a directory as a process (which fails with an
+        # opaque "service-specific error code 3" and zero log output).
+        if ((Test-Path $NodeExe -PathType Container)) {
+            $NodeExe = Join-Path $NodeExe "node.exe"
+        }
+        if (Test-Path $NodeExe -PathType Leaf) { return (Resolve-Path $NodeExe).Path }
+        throw "NodeExe path '$NodeExe' is not a file. Pass the full path to node.exe, e.g. -NodeExe 'C:\Program Files\nodejs\node.exe'."
+    }
     $onPath = Get-Command node.exe -ErrorAction SilentlyContinue
     if ($onPath) { return $onPath.Source }
-    throw "node.exe not found. Install Node.js LTS, or pass -NodeExe with the full path."
+    throw "node.exe not found. Install Node.js LTS, or pass -NodeExe with the full path to node.exe."
 }
 
 $nssm = Resolve-Nssm
