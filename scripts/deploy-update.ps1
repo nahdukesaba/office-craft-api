@@ -6,11 +6,11 @@
 #>
 
 param(
-    [string]$ServiceName = "OfficeCraftBackend",
-    [string]$InstallDir  = "C:\apps\office-craft",
+    [string]$ServiceName = "SILAPETBackend",
+    [string]$InstallDir  = "D:\Kerja\dev\office-craft-api",
     [string]$ExeName     = "office-craft-api.exe",
     [string]$NewBinaryPath,
-    [string]$NssmPath    = ""
+    [string]$NssmPath    = "D:\Kerja\dev\nssm-2.24\nssm-2.24\win64"
 )
 
 $ErrorActionPreference = "Stop"

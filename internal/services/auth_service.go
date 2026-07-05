@@ -116,7 +116,7 @@ func (s *AuthService) Login(ctx context.Context, email, password string) (string
 		// Profile row missing (e.g. user created directly in Supabase
 		// dashboard, bypassing our /auth/register) -> backfill as pending,
 		// same gate as any other new account.
-		user, err = s.users.Upsert(ctx, resp.User.ID, resp.User.Email, "", models.RoleUser, models.UserStatusPending)
+		user, err = s.users.Upsert(ctx, resp.User.ID, resp.User.Email, "", nil, models.RoleUser, models.UserStatusPending)
 		if err != nil {
 			return "", nil, err
 		}
@@ -136,7 +136,9 @@ func (s *AuthService) Login(ctx context.Context, email, password string) (string
 // profile with status "pending". No usable token is ever returned here,
 // regardless of whether Supabase's own email-confirmation is on or off -
 // the account still needs an admin to approve it before anyone can log in.
-func (s *AuthService) Register(ctx context.Context, email, password, fullName string) (*models.AppUser, error) {
+// phone is optional (pass "" if not supplied) - it's needed later for
+// WhatsApp notifications but never blocks registration.
+func (s *AuthService) Register(ctx context.Context, email, password, fullName, phone string) (*models.AppUser, error) {
 	resp, err := s.supabaseRequest(ctx, "/signup", map[string]string{
 		"email":    email,
 		"password": password,
@@ -145,7 +147,12 @@ func (s *AuthService) Register(ctx context.Context, email, password, fullName st
 		return nil, err
 	}
 
-	user, err := s.users.Upsert(ctx, resp.User.ID, resp.User.Email, fullName, models.RoleUser, models.UserStatusPending)
+	var phonePtr *string
+	if phone != "" {
+		phonePtr = &phone
+	}
+
+	user, err := s.users.Upsert(ctx, resp.User.ID, resp.User.Email, fullName, phonePtr, models.RoleUser, models.UserStatusPending)
 	if err != nil {
 		return nil, err
 	}

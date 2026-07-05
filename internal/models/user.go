@@ -8,6 +8,7 @@ type AppUser struct {
 	ID        string    `json:"id" db:"id"`
 	Email     string    `json:"email" db:"email"`
 	FullName  string    `json:"fullName" db:"full_name"`
+	Phone     *string   `json:"phone" db:"phone"`
 	Role      string    `json:"role" db:"role"`
 	Status    string    `json:"status" db:"status"`
 	CreatedAt time.Time `json:"createdAt" db:"created_at"`

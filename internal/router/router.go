@@ -22,9 +22,9 @@ func Setup(app *fiber.App, cfg *config.Config, pool *pgxpool.Pool) {
 	authSvc := services.NewAuthService(cfg, userRepo)
 	bookingSvc := services.NewBookingService(bookingRepo, resourceRepo, userRepo, proofRepo, eventRepo)
 	proofSvc := services.NewProofService(bookingRepo)
-	// Swap services.LogNotifier{} for a real email/SMS/webhook Notifier once
-	// you have a provider - NotifyService and the handler don't need to change.
-	notifySvc := services.NewNotifyService(bookingRepo, userRepo, services.LogNotifier{})
+	emailSvc := services.NewEmailService(cfg)
+	whatsappSvc := services.NewWhatsAppService(cfg)
+	notifySvc := services.NewNotifyService(bookingRepo, userRepo, resourceRepo, emailSvc, whatsappSvc)
 
 	authHandler := handlers.NewAuthHandler(authSvc, userRepo)
 	resourceHandler := handlers.NewResourceHandler(resourceRepo)

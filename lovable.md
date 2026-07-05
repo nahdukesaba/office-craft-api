@@ -27,7 +27,8 @@ Response `200`: `{ "token": string, "user": AppUser }`
 Response `403` if the account is `pending` (`ACCOUNT_PENDING_APPROVAL`) or `rejected` (`ACCOUNT_REJECTED`) — see AppUser.status below. **Show a distinct, friendly screen for these** ("Your account is awaiting admin approval" / "Your access request was declined") rather than a generic login-failed toast.
 
 ### `POST /auth/register`
-Body: `{ "email": string, "password": string, "fullName": string }`
+Body: `{ "email": string, "password": string, "fullName": string, "phone"?: string }`
+`phone` is optional but needed if you want this user to receive WhatsApp notifications later — format as digits only, international format, no `+` or leading `0` (e.g. Indonesian `0812-3456-7890` → `"6281234567890"`). Worth adding a phone input to your signup form with a hint about this format, or a "add later" affordance, since there's no profile-edit endpoint yet to set it after the fact.
 Response `201`: `{ "message": string, "user": AppUser }` — **no token is ever returned here**, regardless of Supabase's own email-confirmation setting. `user.status` will be `"pending"`. Show the user a "your account is awaiting admin approval" screen immediately after registering; do not attempt to auto-login.
 
 ### `GET /auth/me` (auth required)
@@ -38,6 +39,7 @@ interface AppUser {
   id: string;
   email: string;
   fullName: string;
+  phone: string | null;
   role: "user" | "admin";
   status: "pending" | "approved" | "rejected";
   createdAt: string; // ISO 8601
@@ -237,7 +239,26 @@ In_use → finished. Requires at least one `"after"` proof already uploaded for 
 Pending or approved → cancelled. Response `200`: `BookingWithDetails`
 
 ### `POST /bookings/:id/notify` (owner or admin)
-Only allowed when status is `approved`, `in_use`, or `finished`, else `400 NOTIFY_NOT_ALLOWED`. Currently logs server-side (no email/SMS wired up yet — safe to call, just won't deliver anything externally today). Response `200`: `{ "success": true, "booking": Booking }`
+Only allowed when status is `approved`, `in_use`, or `finished`, else `400 NOTIFY_NOT_ALLOWED`.
+
+Body (optional): `{ "note"?: string }` — an admin can attach an extra remark (e.g. "the after-photo doesn't clearly show the projector cable, please confirm it's there"), appended to the templated message.
+
+This **actually sends** now: an email (always attempted) and a WhatsApp message via a self-hosted gateway (attempted if the owner has a `phone` on file). The message content is templated per status:
+- `approved` → asset-care reminder + don't forget before/after photos
+- `in_use` → reminder to upload the after-photo + be mindful of time for the next booking
+- `finished` → thank-you for using the asset responsibly
+
+Response `200`:
+```ts
+interface NotifyResult {
+  booking: Booking;
+  emailSent: boolean;
+  emailError?: string;
+  whatsAppSent: boolean;
+  whatsAppError?: string;
+}
+```
+**Always check `emailSent`/`whatsAppSent` rather than assuming success from the `200` status** — a `200` with `whatsAppSent: false` and a `whatsAppError` (e.g. "recipient has no phone number on file") is a normal, expected outcome, not a bug. Surface this in the admin UI (e.g. "Email sent ✓, WhatsApp not sent: no phone on file") rather than a blanket "Notification sent!" toast.
 
 ### `GET /bookings/:id/history` (owner or admin)
 Returns the full audit trail for a booking — every status change plus every proof upload — merged into one chronological array. **Use this to render a booking detail timeline.**
@@ -347,4 +368,6 @@ interface StatsOverview {
     - After-photo uploader + "Finish" button → visible only when status is `in_use`.
     - "Revoke" (admin) → visible only for `approved`/`in_use`.
 7. **Booking detail screen should include a timeline** built from `GET /bookings/:id/history` — it's pre-merged and pre-sorted, no client-side merging of statuses and proofs needed.
-8. **Health check:** `GET /health` (relative to the base URL above) → `{ "status": "ok" }`, unauthenticated. Good for a connectivity smoke test before wiring up real screens.
+8. **"Notify user" is now a real send, not a no-op.** Give the admin a small optional textarea for the `note` field before firing it (useful for flagging insufficient/unclear proof photos), and render `emailSent`/`whatsAppSent` from the response individually rather than a single generic success toast.
+9. **Phone numbers are optional and there's no edit-profile endpoint yet.** If a user registered without a phone (or before this field existed), `whatsAppSent` will come back `false` with an explanatory error — that's expected, not something to retry or treat as a failure state.
+10. **Health check:** `GET /health` (relative to the base URL above) → `{ "status": "ok" }`, unauthenticated. Good for a connectivity smoke test before wiring up real screens.

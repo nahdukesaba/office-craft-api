@@ -27,6 +27,7 @@ type registerRequest struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
 	FullName string `json:"fullName"`
+	Phone    string `json:"phone"`
 }
 
 type authResponse struct {
@@ -63,7 +64,7 @@ func (h *AuthHandler) Register(c *fiber.Ctx) error {
 		return apperror.BadRequest("VALIDATION_ERROR", "email, password and fullName are required")
 	}
 
-	user, err := h.auth.Register(c.Context(), req.Email, req.Password, req.FullName)
+	user, err := h.auth.Register(c.Context(), req.Email, req.Password, req.FullName, req.Phone)
 	if err != nil {
 		if ae, ok := err.(*services.AuthError); ok {
 			return apperror.New(ae.StatusCode, ae.Code, ae.Message)

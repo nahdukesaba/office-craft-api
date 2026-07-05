@@ -18,6 +18,14 @@ func NewNotifyHandler(svc *services.NotifyService, bookings *repository.BookingR
 	return &NotifyHandler{svc: svc, bookings: bookings}
 }
 
+type notifyRequest struct {
+	// Note is an optional admin-supplied extra remark - e.g. flagging that
+	// a proof photo looks insufficient, or a component appears missing or
+	// damaged in the after-photo. Appended to the templated message for
+	// the booking's current status.
+	Note string `json:"note"`
+}
+
 func (h *NotifyHandler) Notify(c *fiber.Ctx) error {
 	// Reuse the same access rule as other booking sub-resources: owner or admin.
 	b, err := h.bookings.GetByID(c.Context(), c.Params("id"))
@@ -28,9 +36,12 @@ func (h *NotifyHandler) Notify(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusForbidden, "you do not have access to this booking")
 	}
 
-	updated, nErr := h.svc.Notify(c.Context(), c.Params("id"))
+	var in notifyRequest
+	_ = c.BodyParser(&in) // body is optional
+
+	result, nErr := h.svc.Notify(c.Context(), c.Params("id"), in.Note)
 	if nErr != nil {
 		return nErr
 	}
-	return c.JSON(fiber.Map{"success": true, "booking": updated})
+	return c.JSON(result)
 }

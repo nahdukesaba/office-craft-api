@@ -1,2 +1,5 @@
-email,password,full_name
-ephraim.silalahi@pkp.go.id,test123123,Ephraim Kesaba Silalahi
+email,password,full_name,phone
+ephraim.silalahi@pkp.go.id,test123123,Ephraim Kesaba Silalahi,08123456789
+mochammad.santoso@pkp.go.id,test123123,Mochammad Santoso,08123456789
+herda.hutahaean@pkp.go.id,test123123,Herda Hutahaean,08123456789
+dilla.muliani@pkp.go.id,test123123,Dilla Muliani,08123456789
