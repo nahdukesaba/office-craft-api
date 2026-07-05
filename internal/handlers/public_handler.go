@@ -20,14 +20,15 @@ func NewPublicHandler(bookings *repository.BookingRepository, resources *reposit
 }
 
 type publicBooking struct {
-	ID         string `json:"id"`
-	ResourceID string `json:"resourceId"`
-	StartTime  string `json:"startTime"`
-	EndTime    string `json:"endTime"`
-	Status     string `json:"status"`
+	ID         string  `json:"id"`
+	ResourceID string  `json:"resourceId"`
+	PhotoURL   *string `json:"photoUrl"`
+	StartTime  string  `json:"startTime"`
+	EndTime    string  `json:"endTime"`
+	Status     string  `json:"status"`
 }
 
-func toPublicBookings(items []models.Booking) []publicBooking {
+func toPublicBookings(items []models.Booking, photoURL *string) []publicBooking {
 	out := make([]publicBooking, 0, len(items))
 	for _, b := range items {
 		out = append(out, publicBooking{
@@ -36,6 +37,7 @@ func toPublicBookings(items []models.Booking) []publicBooking {
 			StartTime:  b.StartTime.Format("2006-01-02T15:04:05Z07:00"),
 			EndTime:    b.EndTime.Format("2006-01-02T15:04:05Z07:00"),
 			Status:     b.Status,
+			PhotoURL:   photoURL,
 		})
 	}
 	return out
@@ -46,7 +48,7 @@ func (h *PublicHandler) AllBookings(c *fiber.Ctx) error {
 	if err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "failed to list bookings")
 	}
-	return c.JSON(toPublicBookings(items))
+	return c.JSON(toPublicBookings(items, nil))
 }
 
 func (h *PublicHandler) BookingsForResource(c *fiber.Ctx) error {
@@ -63,5 +65,5 @@ func (h *PublicHandler) BookingsForResource(c *fiber.Ctx) error {
 	if err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "failed to list bookings")
 	}
-	return c.JSON(toPublicBookings(items))
+	return c.JSON(toPublicBookings(items, res.PhotoURL))
 }
