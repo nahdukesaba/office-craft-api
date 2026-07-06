@@ -1,6 +1,13 @@
+# Environment
 .env
-.idea
+
+# JetBrains
+.idea/
+
+# Build outputs
 *.exe
-logs/
+*.exe~
 *~
+
+# Logs
 logs/
