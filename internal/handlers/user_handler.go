@@ -34,10 +34,30 @@ func (h *UserHandler) List(c *fiber.Ctx) error {
 }
 
 func (h *UserHandler) Approve(c *fiber.Ctx) error {
+	user, err := h.users.GetByID(c.Context(), c.Params("id"))
+	if err != nil {
+		return apperror.Internal("failed to get user")
+	}
+	if user == nil {
+		return apperror.NotFound("USER_NOT_FOUND", "user not found")
+	}
+	if user.Status != models.UserStatusPending {
+		return apperror.BadRequest("INVALID_STATUS", "user status must be pending to approve")
+	}
 	return h.setStatus(c, models.UserStatusApproved)
 }
 
 func (h *UserHandler) Reject(c *fiber.Ctx) error {
+	user, err := h.users.GetByID(c.Context(), c.Params("id"))
+	if err != nil {
+		return apperror.Internal("failed to get user")
+	}
+	if user == nil {
+		return apperror.NotFound("USER_NOT_FOUND", "user not found")
+	}
+	if user.Status != models.UserStatusPending {
+		return apperror.BadRequest("INVALID_STATUS", "user status must be pending to reject")
+	}
 	return h.setStatus(c, models.UserStatusRejected)
 }
 

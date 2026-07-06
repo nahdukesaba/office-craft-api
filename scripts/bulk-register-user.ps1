@@ -91,12 +91,14 @@ foreach ($User in $Users) {
     $Email = "$($User.email)".Trim()
     $Password = "$($User.password)".Trim()
     $FullName = "$($User.full_name)".Trim()
+    $Phone = "$($User.phone)".Trim()
 
     # Skip completely empty rows
     if (
         [string]::IsNullOrWhiteSpace($Email) -and
         [string]::IsNullOrWhiteSpace($Password) -and
-        [string]::IsNullOrWhiteSpace($FullName)
+        [string]::IsNullOrWhiteSpace($FullName) -and
+        [string]::IsNullOrWhiteSpace($Phone)
     ) {
         $Skipped++
         continue
@@ -127,6 +129,7 @@ foreach ($User in $Users) {
             id = $UserId
             email = $Email
             full_name = $FullName
+            phone = $Phone
             role = "user"
             status = "pending"
         }
