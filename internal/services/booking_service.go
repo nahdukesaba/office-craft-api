@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"slices"
 	"time"
 
 	"office-craft-api/internal/apperror"
@@ -21,10 +22,11 @@ type BookingService struct {
 	users     *repository.UserRepository
 	proofs    *repository.ProofRepository
 	events    *repository.BookingEventRepository
+	notify    *NotifyService
 }
 
-func NewBookingService(bookings *repository.BookingRepository, resources *repository.ResourceRepository, users *repository.UserRepository, proofs *repository.ProofRepository, events *repository.BookingEventRepository) *BookingService {
-	return &BookingService{bookings: bookings, resources: resources, users: users, proofs: proofs, events: events}
+func NewBookingService(bookings *repository.BookingRepository, resources *repository.ResourceRepository, users *repository.UserRepository, proofs *repository.ProofRepository, events *repository.BookingEventRepository, notify *NotifyService) *BookingService {
+	return &BookingService{bookings: bookings, resources: resources, users: users, proofs: proofs, events: events, notify: notify}
 }
 
 func isOnInterval(t time.Time) bool {
@@ -36,6 +38,16 @@ func isOnInterval(t time.Time) bool {
 // to roll back or fail a booking action that already succeeded.
 func (s *BookingService) recordEvent(ctx context.Context, bookingID, eventType string, fromStatus *string, toStatus, actorID, notes string) {
 	_ = s.events.Create(ctx, bookingID, eventType, fromStatus, toStatus, actorID, notes)
+}
+
+// fireNotify sends an email/WhatsApp notification in the background so
+// approve/reject/revoke responses aren't held up waiting on an SMTP dial or
+// an HTTP call to the WhatsApp gateway. Uses context.Background() rather
+// than the request context, which gets cancelled the moment the HTTP
+// response is written - a notification that's mid-flight at that point
+// should still complete, not get cut off.
+func (s *BookingService) fireNotify(booking models.Booking, kind, note string) {
+	go s.notify.NotifyForAction(context.Background(), booking, kind, note)
 }
 
 // buildConflictDetail loads the booking owner's name to populate the
@@ -108,7 +120,9 @@ func (s *BookingService) Create(ctx context.Context, userID string, in models.Bo
 
 // Approve approves a pending booking and auto-rejects any other pending
 // booking that overlaps the same window. Returns the approved booking and
-// the ids of anything auto-rejected.
+// the ids of anything auto-rejected. Notifies the owner of the approval
+// (not the auto-rejected bookings' owners - that's surfaced to the admin
+// via autoRejectedIds instead).
 func (s *BookingService) Approve(ctx context.Context, actorID, id string) (*models.Booking, []string, error) {
 	booking, err := s.bookings.GetByID(ctx, id)
 	if err != nil {
@@ -142,29 +156,51 @@ func (s *BookingService) Approve(ctx context.Context, actorID, id string) (*mode
 		s.recordEvent(ctx, rejectedID, models.EventAutoRejected, strPtr(models.BookingStatusPending), models.BookingStatusRejected, actorID, "Auto-rejected: slot approved for another request")
 	}
 
+	s.fireNotify(*approved, models.BookingStatusApproved, "")
+
 	return approved, autoRejectedIDs, nil
 }
 
-// Reject transitions a pending booking to rejected.
-func (s *BookingService) Reject(ctx context.Context, actorID, id string) (*models.Booking, error) {
-	return s.transition(ctx, actorID, id, []string{models.BookingStatusPending}, models.BookingStatusRejected, models.EventRejected, "")
+// Reject transitions a pending booking to rejected and notifies the owner,
+// including the admin's optional note (e.g. explaining why).
+func (s *BookingService) Reject(ctx context.Context, actorID, id, note string) (*models.Booking, error) {
+	updated, err := s.transition(ctx, actorID, id, []string{models.BookingStatusPending}, models.BookingStatusRejected, models.EventRejected, note)
+	if err != nil {
+		return nil, err
+	}
+	s.fireNotify(*updated, models.BookingStatusRejected, note)
+	return updated, nil
 }
 
-// Cancel transitions a pending or approved booking to cancelled.
+// Cancel transitions a pending or approved booking to cancelled. This is
+// the user's own self-service cancel - deliberately does NOT notify
+// anyone, since the actor and the owner are the same person.
 func (s *BookingService) Cancel(ctx context.Context, actorID, id string) (*models.Booking, error) {
 	return s.transition(ctx, actorID, id, []string{models.BookingStatusPending, models.BookingStatusApproved}, models.BookingStatusCancelled, models.EventCancelled, "")
 }
 
 // Revoke transitions an approved/in_use booking to cancelled, as an admin
-// override, stamping admin_notes with the supplied reason.
+// override, stamping admin_notes with the supplied reason and notifying
+// the owner - distinct from Cancel even though both end in the same
+// "cancelled" status, because here the actor and the owner are different
+// people and the owner needs to know their asset access was pulled.
 func (s *BookingService) Revoke(ctx context.Context, actorID, id, adminNotes, reason string) (*models.Booking, error) {
-	notes := "Revoked by admin"
-	if adminNotes != "" {
-		notes = "Revoked by admin: " + adminNotes
-	} else if reason != "" {
-		notes = "Revoked by admin: " + reason
+	userNote := adminNotes
+	if userNote == "" {
+		userNote = reason
 	}
-	return s.transition(ctx, actorID, id, []string{models.BookingStatusApproved, models.BookingStatusInUse}, models.BookingStatusCancelled, models.EventRevoked, notes)
+
+	notes := "Revoked by admin"
+	if userNote != "" {
+		notes = "Revoked by admin: " + userNote
+	}
+
+	updated, err := s.transition(ctx, actorID, id, []string{models.BookingStatusApproved, models.BookingStatusInUse}, models.BookingStatusCancelled, models.EventRevoked, notes)
+	if err != nil {
+		return nil, err
+	}
+	s.fireNotify(*updated, "revoked", userNote)
+	return updated, nil
 }
 
 // Start transitions an approved booking to in_use. Only allowed if today
@@ -261,13 +297,7 @@ func (s *BookingService) transition(ctx context.Context, actorID, id string, all
 		return nil, apperror.NotFound("BOOKING_NOT_FOUND", "booking not found")
 	}
 
-	allowed := false
-	for _, st := range allowedFrom {
-		if booking.Status == st {
-			allowed = true
-			break
-		}
-	}
+	allowed := slices.Contains(allowedFrom, booking.Status)
 	if !allowed {
 		return nil, apperror.Conflict("INVALID_STATUS", "booking status "+booking.Status+" cannot transition to "+newStatus)
 	}

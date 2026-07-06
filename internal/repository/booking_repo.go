@@ -350,3 +350,31 @@ func (r *BookingRepository) SoftDelete(ctx context.Context, id string) (bool, er
 	}
 	return tag.RowsAffected() > 0, nil
 }
+
+// ListForDateRange returns every booking (any status) whose start_time
+// falls within [from, to), for the reports/export and reports/insights
+// endpoints. Not paginated - reports are expected to cover a bounded range
+// like a month, not the whole table.
+func (r *BookingRepository) ListForDateRange(ctx context.Context, from, to time.Time) ([]models.Booking, error) {
+	query := fmt.Sprintf(`
+		SELECT %s FROM public.bookings b
+		WHERE b.deleted_at IS NULL AND b.start_time >= $1 AND b.start_time < $2
+		ORDER BY b.start_time ASC
+	`, bookingColumns)
+
+	rows, err := r.pool.Query(ctx, query, from, to)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []models.Booking
+	for rows.Next() {
+		b, err := scanBooking(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *b)
+	}
+	return out, rows.Err()
+}

@@ -54,6 +54,11 @@ type BookingInput struct {
 	Purpose    string    `json:"purpose"`
 }
 
+// RejectInput is the shape accepted on PUT /bookings/:id/reject.
+type RejectInput struct {
+	Note string `json:"note"`
+}
+
 // RevokeInput is the shape accepted on PUT /bookings/:id/revoke.
 type RevokeInput struct {
 	AdminNotes string `json:"adminNotes"`

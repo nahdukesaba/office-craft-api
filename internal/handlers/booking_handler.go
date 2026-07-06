@@ -161,7 +161,11 @@ func (h *BookingHandler) Reject(c *fiber.Ctx) error {
 	if middleware.RoleFromCtx(c) != models.RoleAdmin {
 		return apperror.Forbidden("FORBIDDEN", "admin privileges required")
 	}
-	updated, err := h.svc.Reject(c.Context(), middleware.UserIDFromCtx(c), b.ID)
+
+	var in models.RejectInput
+	_ = c.BodyParser(&in) // body is optional
+
+	updated, err := h.svc.Reject(c.Context(), middleware.UserIDFromCtx(c), b.ID, in.Note)
 	if err != nil {
 		return err
 	}

@@ -20,11 +20,12 @@ func Setup(app *fiber.App, cfg *config.Config, pool *pgxpool.Pool) {
 	eventRepo := repository.NewBookingEventRepository(pool)
 
 	authSvc := services.NewAuthService(cfg, userRepo)
-	bookingSvc := services.NewBookingService(bookingRepo, resourceRepo, userRepo, proofRepo, eventRepo)
-	proofSvc := services.NewProofService(bookingRepo)
 	emailSvc := services.NewEmailService(cfg)
 	whatsappSvc := services.NewWhatsAppService(cfg)
 	notifySvc := services.NewNotifyService(bookingRepo, userRepo, resourceRepo, emailSvc, whatsappSvc)
+	bookingSvc := services.NewBookingService(bookingRepo, resourceRepo, userRepo, proofRepo, eventRepo, notifySvc)
+	proofSvc := services.NewProofService(bookingRepo)
+	reportSvc := services.NewReportService(bookingRepo, resourceRepo, userRepo)
 
 	authHandler := handlers.NewAuthHandler(authSvc, userRepo)
 	resourceHandler := handlers.NewResourceHandler(resourceRepo)
@@ -34,6 +35,7 @@ func Setup(app *fiber.App, cfg *config.Config, pool *pgxpool.Pool) {
 	publicHandler := handlers.NewPublicHandler(bookingRepo, resourceRepo)
 	statsHandler := handlers.NewStatsHandler(bookingRepo, resourceRepo, userRepo)
 	userHandler := handlers.NewUserHandler(userRepo)
+	reportHandler := handlers.NewReportHandler(reportSvc)
 
 	verifier := middleware.NewTokenVerifier(cfg.SupabaseJWTSecret, cfg.SupabaseURL)
 	requireAuth := middleware.RequireAuth(verifier, pool)
@@ -93,4 +95,9 @@ func Setup(app *fiber.App, cfg *config.Config, pool *pgxpool.Pool) {
 	users.Get("/", userHandler.List)
 	users.Put("/:id/approve", userHandler.Approve)
 	users.Put("/:id/reject", userHandler.Reject)
+
+	// -------- Reports (admin: date-range export & insights) --------
+	reports := api.Group("/reports", requireAuth, requireAdmin)
+	reports.Get("/bookings/export", reportHandler.Export)
+	reports.Get("/bookings/insights", reportHandler.Insights)
 }

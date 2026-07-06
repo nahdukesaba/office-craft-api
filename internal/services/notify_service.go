@@ -11,7 +11,11 @@ import (
 	"office-craft-api/internal/utils"
 )
 
-// notifiableStatuses are the only statuses a notify request is allowed for.
+// notifiableStatuses gates the manual POST /bookings/:id/notify endpoint
+// only - the internal NotifyForAction path (used for auto-notify on
+// approve/reject/revoke) bypasses this, since "rejected" and "cancelled"
+// (revoke's resulting status) aren't in this set but absolutely should
+// still notify the owner.
 var notifiableStatuses = map[string]bool{
 	models.BookingStatusApproved: true,
 	models.BookingStatusInUse:    true,
@@ -42,11 +46,9 @@ type NotifyResult struct {
 	WhatsAppError string          `json:"whatsAppError,omitempty"`
 }
 
-// Notify sends a booking-status notification (email + WhatsApp) to its
-// owner, but only for bookings that are approved/in_use/finished. note is
-// an optional extra message an admin can attach - e.g. "the after-photo
-// doesn't show the whiteboard marker tray, please confirm it's present" -
-// appended to whichever templated message matches the current status.
+// Notify is the manual, admin/user-triggered endpoint's entry point: sends
+// a notification for the booking's *current* status, but only when that
+// status is approved/in_use/finished.
 func (s *NotifyService) Notify(ctx context.Context, bookingID, note string) (*NotifyResult, error) {
 	booking, err := s.bookings.GetByID(ctx, bookingID)
 	if err != nil {
@@ -67,17 +69,42 @@ func (s *NotifyService) Notify(ctx context.Context, bookingID, note string) (*No
 		return nil, apperror.NotFound("USER_NOT_FOUND", "booking owner not found")
 	}
 
-	resourceName := "the resource"
-	if res, err := s.resources.GetByID(ctx, booking.ResourceID); err == nil && res != nil {
-		resourceName = res.Name
+	return s.send(ctx, *booking, owner, s.resourceName(ctx, booking.ResourceID), booking.Status, note), nil
+}
+
+// NotifyForAction is the internal, best-effort entry point used by
+// BookingService right after approve/reject/revoke succeed. Unlike Notify,
+// it takes an explicit `kind` rather than deriving content from the
+// booking's stored status - this matters because revoke's resulting status
+// is "cancelled", identical to a plain self-cancel, so status alone can't
+// distinguish "admin revoked this" from "user cancelled their own booking"
+// (which intentionally does NOT notify). It never returns an error - the
+// caller (an already-successful booking mutation) shouldn't fail or roll
+// back because a notification couldn't be sent; problems are logged here
+// and reflected in the returned result for anyone who wants to inspect it.
+func (s *NotifyService) NotifyForAction(ctx context.Context, booking models.Booking, kind, note string) *NotifyResult {
+	owner, err := s.users.GetByID(ctx, booking.UserID)
+	if err != nil || owner == nil {
+		log.Printf("notify: could not load owner for booking %s (kind=%s): %v", booking.ID, kind, err)
+		return &NotifyResult{Booking: &booking}
 	}
+	return s.send(ctx, booking, owner, s.resourceName(ctx, booking.ResourceID), kind, note)
+}
 
-	subject, htmlBody, textBody := buildNotificationContent(booking.Status, owner.FullName, resourceName, *booking, note)
+func (s *NotifyService) resourceName(ctx context.Context, resourceID string) string {
+	if res, err := s.resources.GetByID(ctx, resourceID); err == nil && res != nil {
+		return res.Name
+	}
+	return "the resource"
+}
 
-	result := &NotifyResult{Booking: booking}
+func (s *NotifyService) send(ctx context.Context, booking models.Booking, owner *models.AppUser, resourceName, kind, note string) *NotifyResult {
+	subject, htmlBody, textBody := buildNotificationContent(kind, owner.FullName, resourceName, booking, note)
+
+	result := &NotifyResult{Booking: &booking}
 
 	if err := s.email.Send(owner.Email, owner.FullName, subject, htmlBody); err != nil {
-		log.Printf("notify: email send failed for booking %s: %v", booking.ID, err)
+		log.Printf("notify: email send failed for booking %s (kind=%s): %v", booking.ID, kind, err)
 		result.EmailError = err.Error()
 	} else {
 		result.EmailSent = true
@@ -88,23 +115,24 @@ func (s *NotifyService) Notify(ctx context.Context, bookingID, note string) (*No
 		phone = *owner.Phone
 	}
 	if err := s.whatsapp.Send(ctx, phone, textBody); err != nil {
-		log.Printf("notify: whatsapp send failed for booking %s: %v", booking.ID, err)
+		log.Printf("notify: whatsapp send failed for booking %s (kind=%s): %v", booking.ID, kind, err)
 		result.WhatsAppError = err.Error()
 	} else {
 		result.WhatsAppSent = true
 	}
 
-	return result, nil
+	return result
 }
 
 // buildNotificationContent returns (subject, htmlBody, textBody) for the
-// given booking status. textBody doubles as the WhatsApp message (plain
-// text); htmlBody is the email body. Both carry the same substance.
-func buildNotificationContent(status, ownerName, resourceName string, booking models.Booking, note string) (string, string, string) {
+// given notification kind ("approved", "rejected", "revoked", "in_use",
+// "finished"). textBody doubles as the WhatsApp message (plain text);
+// htmlBody is the email body. Both carry the same substance.
+func buildNotificationContent(kind, ownerName, resourceName string, booking models.Booking, note string) (string, string, string) {
 	timeRange := formatBookingRange(booking)
 
 	var subject, mainText string
-	switch status {
+	switch kind {
 	case models.BookingStatusApproved:
 		subject = fmt.Sprintf("Booking Approved: %s", resourceName)
 		mainText = fmt.Sprintf(
@@ -123,9 +151,21 @@ func buildNotificationContent(status, ownerName, resourceName string, booking mo
 			"Hi %s, thank you for using *%s* (%s) responsibly! Your booking has been marked as finished.",
 			ownerName, resourceName, timeRange,
 		)
+	case models.BookingStatusRejected:
+		subject = fmt.Sprintf("Booking Rejected: %s", resourceName)
+		mainText = fmt.Sprintf(
+			"Hi %s, unfortunately your booking request for *%s* (%s) has been rejected.",
+			ownerName, resourceName, timeRange,
+		)
+	case "revoked":
+		subject = fmt.Sprintf("Booking Cancelled by Admin: %s", resourceName)
+		mainText = fmt.Sprintf(
+			"Hi %s, your approved booking for *%s* (%s) has been cancelled by an admin.",
+			ownerName, resourceName, timeRange,
+		)
 	default:
 		subject = fmt.Sprintf("Update on your booking of %s", resourceName)
-		mainText = fmt.Sprintf("Hi %s, your booking of *%s* (%s) status is now: %s.", ownerName, resourceName, timeRange, status)
+		mainText = fmt.Sprintf("Hi %s, your booking of *%s* (%s) status is now: %s.", ownerName, resourceName, timeRange, kind)
 	}
 
 	if note != "" {
@@ -133,7 +173,6 @@ func buildNotificationContent(status, ownerName, resourceName string, booking mo
 	}
 
 	textBody := mainText // WhatsApp: plain text, *asterisks* render as bold in the WhatsApp client itself.
-
 	htmlBody := "<p>" + htmlEscapeNewlines(mainText) + "</p>"
 
 	return subject, htmlBody, textBody
