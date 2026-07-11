@@ -50,6 +50,13 @@ func (s *BookingService) fireNotify(booking models.Booking, kind, note string) {
 	go s.notify.NotifyForAction(context.Background(), booking, kind, note)
 }
 
+// fireAdminNotify is fireNotify's counterpart for the admin-facing
+// direction (new request / started / finished) - same background-goroutine
+// rationale, different recipient set.
+func (s *BookingService) fireAdminNotify(booking models.Booking, kind, note string) {
+	go s.notify.NotifyAdminsForAction(context.Background(), booking, kind, note)
+}
+
 // buildConflictDetail loads the booking owner's name to populate the
 // conflictWith payload the frontend uses for its toast.
 func (s *BookingService) buildConflictDetail(ctx context.Context, b models.Booking) models.ConflictDetail {
@@ -115,6 +122,7 @@ func (s *BookingService) Create(ctx context.Context, userID string, in models.Bo
 		return nil, err
 	}
 	s.recordEvent(ctx, booking.ID, models.EventCreated, nil, models.BookingStatusPending, userID, "")
+	s.fireAdminNotify(*booking, "requested", "")
 	return booking, nil
 }
 
@@ -237,6 +245,7 @@ func (s *BookingService) Start(ctx context.Context, actorID, id string) (*models
 		return nil, err
 	}
 	s.recordEvent(ctx, id, models.EventStarted, strPtr(models.BookingStatusApproved), models.BookingStatusInUse, actorID, "")
+	s.fireAdminNotify(*updated, "started", "")
 	return updated, nil
 }
 
@@ -282,6 +291,7 @@ func (s *BookingService) Finish(ctx context.Context, actorID, id string) (*model
 		return nil, err
 	}
 	s.recordEvent(ctx, id, models.EventFinished, strPtr(models.BookingStatusInUse), models.BookingStatusFinished, actorID, "")
+	s.fireAdminNotify(*updated, "finished", "")
 	return updated, nil
 }
 

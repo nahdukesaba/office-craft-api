@@ -27,16 +27,16 @@ type ResourceFilter struct {
 }
 
 const resourceColumns = `
-	id, type, name, description, location, photo_url, is_available,
-	capacity, amenities, license_plate, seats, fuel_type, created_at, updated_at
+	id, type, name, description, location, photo_url, is_available, color,
+	capacity, amenities, license_plate, fuel_type, created_at, updated_at
 `
 
 func scanResource(row pgx.Row) (*models.Resource, error) {
 	var r models.Resource
 	var amenitiesRaw []byte
 	if err := row.Scan(
-		&r.ID, &r.Type, &r.Name, &r.Description, &r.Location, &r.PhotoURL, &r.IsAvailable,
-		&r.Capacity, &amenitiesRaw, &r.LicensePlate, &r.Seats, &r.FuelType, &r.CreatedAt, &r.UpdatedAt,
+		&r.ID, &r.Type, &r.Name, &r.Description, &r.Location, &r.PhotoURL, &r.IsAvailable, &r.Color,
+		&r.Capacity, &amenitiesRaw, &r.LicensePlate, &r.FuelType, &r.CreatedAt, &r.UpdatedAt,
 	); err != nil {
 		return nil, err
 	}
@@ -127,17 +127,21 @@ func (r *ResourceRepository) Create(ctx context.Context, in models.ResourceInput
 	if err != nil {
 		return nil, err
 	}
+	color := in.Color
+	if color == "" {
+		color = models.DefaultResourceColor
+	}
 
 	query := fmt.Sprintf(`
 		INSERT INTO public.resources
-			(type, name, description, location, photo_url, is_available, capacity, amenities, license_plate, seats, fuel_type)
+			(type, name, description, location, photo_url, is_available, color, capacity, amenities, license_plate, fuel_type)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
 		RETURNING %s
 	`, resourceColumns)
 
 	row := r.pool.QueryRow(ctx, query,
-		in.Type, in.Name, in.Description, in.Location, in.PhotoURL, isAvailable,
-		in.Capacity, amenities, in.LicensePlate, in.Seats, in.FuelType,
+		in.Type, in.Name, in.Description, in.Location, in.PhotoURL, isAvailable, color,
+		in.Capacity, amenities, in.LicensePlate, in.FuelType,
 	)
 	return scanResource(row)
 }
@@ -151,19 +155,23 @@ func (r *ResourceRepository) Update(ctx context.Context, id string, in models.Re
 	if err != nil {
 		return nil, err
 	}
+	color := in.Color
+	if color == "" {
+		color = models.DefaultResourceColor
+	}
 
 	query := fmt.Sprintf(`
 		UPDATE public.resources SET
 			type = $1, name = $2, description = $3, location = $4, photo_url = $5,
-			is_available = $6, capacity = $7, amenities = $8, license_plate = $9,
-			seats = $10, fuel_type = $11
+			is_available = $6, color = $7, capacity = $8, amenities = $9, license_plate = $10,
+			fuel_type = $11
 		WHERE id = $12 AND deleted_at IS NULL
 		RETURNING %s
 	`, resourceColumns)
 
 	row := r.pool.QueryRow(ctx, query,
-		in.Type, in.Name, in.Description, in.Location, in.PhotoURL, isAvailable,
-		in.Capacity, amenities, in.LicensePlate, in.Seats, in.FuelType, id,
+		in.Type, in.Name, in.Description, in.Location, in.PhotoURL, isAvailable, color,
+		in.Capacity, amenities, in.LicensePlate, in.FuelType, id,
 	)
 	res, err := scanResource(row)
 	if err != nil {

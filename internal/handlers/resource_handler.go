@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"log"
+	"regexp"
 
 	"github.com/gofiber/fiber/v2"
 
@@ -51,6 +52,8 @@ func (h *ResourceHandler) Get(c *fiber.Ctx) error {
 	return c.JSON(res)
 }
 
+var hexColorPattern = regexp.MustCompile(`^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$`)
+
 func validateResourceInput(in *models.ResourceInput) error {
 	switch in.Type {
 	case models.ResourceTypeRoom, models.ResourceTypeCar, models.ResourceTypeBike:
@@ -59,6 +62,9 @@ func validateResourceInput(in *models.ResourceInput) error {
 	}
 	if in.Name == "" {
 		return apperror.BadRequest("VALIDATION_ERROR", "name is required")
+	}
+	if in.Color != "" && !hexColorPattern.MatchString(in.Color) {
+		return apperror.BadRequest("VALIDATION_ERROR", "color must be a hex string like #0EA5E9 or #0E9 (or omitted to use the default)")
 	}
 	return nil
 }

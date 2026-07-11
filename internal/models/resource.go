@@ -8,6 +8,10 @@ const (
 	ResourceTypeBike = "bike"
 )
 
+// DefaultResourceColor is used when a resource is created without an
+// explicit color (matches the DB column's default).
+const DefaultResourceColor = "#64748B"
+
 // Resource is a single-table-inheritance representation of Room / Car / Bike.
 // Fields not relevant to a given type are simply nil / omitted in JSON.
 type Resource struct {
@@ -18,6 +22,9 @@ type Resource struct {
 	Location    string  `json:"location" db:"location"`
 	PhotoURL    *string `json:"photoUrl" db:"photo_url"`
 	IsAvailable bool    `json:"isAvailable" db:"is_available"`
+	// Color is a hex string (e.g. "#0EA5E9") used for calendar/badge
+	// rendering on the frontend - every resource type has one.
+	Color string `json:"color" db:"color"`
 
 	// Room-specific
 	Capacity  *int     `json:"capacity,omitempty" db:"capacity"`
@@ -25,7 +32,6 @@ type Resource struct {
 
 	// Car / Bike-specific
 	LicensePlate *string `json:"licensePlate,omitempty" db:"license_plate"`
-	Seats        *int    `json:"seats,omitempty" db:"seats"`
 	FuelType     *string `json:"fuelType,omitempty" db:"fuel_type"`
 
 	CreatedAt time.Time `json:"createdAt" db:"created_at"`
@@ -40,9 +46,9 @@ type ResourceInput struct {
 	Location     string   `json:"location"`
 	PhotoURL     *string  `json:"photoUrl"`
 	IsAvailable  *bool    `json:"isAvailable"`
+	Color        string   `json:"color"`
 	Capacity     *int     `json:"capacity"`
 	Amenities    []string `json:"amenities"`
 	LicensePlate *string  `json:"licensePlate"`
-	Seats        *int     `json:"seats"`
 	FuelType     *string  `json:"fuelType"`
 }

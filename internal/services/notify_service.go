@@ -91,6 +91,43 @@ func (s *NotifyService) NotifyForAction(ctx context.Context, booking models.Book
 	return s.send(ctx, booking, owner, s.resourceName(ctx, booking.ResourceID), kind, note)
 }
 
+// NotifyAdminsForAction fans a notification out to every active admin -
+// used for "new booking request" (on create), "started" (on start), and
+// "finished" (on finish), so admins don't have to poll the dashboard to
+// know a booking needs review or that an asset is now in use. Best-effort,
+// like NotifyForAction: never returns an error, just logs problems.
+func (s *NotifyService) NotifyAdminsForAction(ctx context.Context, booking models.Booking, kind, note string) {
+	admins, err := s.users.ListAdmins(ctx)
+	if err != nil {
+		log.Printf("notify: could not list admins for booking %s (kind=%s): %v", booking.ID, kind, err)
+		return
+	}
+	if len(admins) == 0 {
+		return
+	}
+
+	ownerName := "A user"
+	if owner, err := s.users.GetByID(ctx, booking.UserID); err == nil && owner != nil {
+		ownerName = owner.FullName
+	}
+	resourceName := s.resourceName(ctx, booking.ResourceID)
+
+	subject, htmlBody, textBody := buildAdminNotificationContent(kind, ownerName, resourceName, booking, note)
+
+	for _, admin := range admins {
+		if err := s.email.Send(admin.Email, admin.FullName, subject, htmlBody); err != nil {
+			log.Printf("notify: admin email send failed (admin=%s, booking=%s, kind=%s): %v", admin.ID, booking.ID, kind, err)
+		}
+		phone := ""
+		if admin.Phone != nil {
+			phone = *admin.Phone
+		}
+		if err := s.whatsapp.Send(ctx, phone, textBody); err != nil {
+			log.Printf("notify: admin whatsapp send failed (admin=%s, booking=%s, kind=%s): %v", admin.ID, booking.ID, kind, err)
+		}
+	}
+}
+
 func (s *NotifyService) resourceName(ctx context.Context, resourceID string) string {
 	if res, err := s.resources.GetByID(ctx, resourceID); err == nil && res != nil {
 		return res.Name
@@ -173,6 +210,48 @@ func buildNotificationContent(kind, ownerName, resourceName string, booking mode
 	}
 
 	textBody := mainText // WhatsApp: plain text, *asterisks* render as bold in the WhatsApp client itself.
+	htmlBody := "<p>" + htmlEscapeNewlines(mainText) + "</p>"
+
+	return subject, htmlBody, textBody
+}
+
+// buildAdminNotificationContent is the admin-facing counterpart to
+// buildNotificationContent - same signature shape, different audience and
+// copy. kind is one of "requested" (new pending booking), "started", or
+// "finished".
+func buildAdminNotificationContent(kind, ownerName, resourceName string, booking models.Booking, note string) (string, string, string) {
+	timeRange := formatBookingRange(booking)
+
+	var subject, mainText string
+	switch kind {
+	case "requested":
+		subject = fmt.Sprintf("New Booking Request: %s", resourceName)
+		mainText = fmt.Sprintf(
+			"%s requested *%s* (%s). Please review and approve or reject it.",
+			ownerName, resourceName, timeRange,
+		)
+	case "started":
+		subject = fmt.Sprintf("Booking Started: %s", resourceName)
+		mainText = fmt.Sprintf(
+			"%s has started using *%s* (%s).",
+			ownerName, resourceName, timeRange,
+		)
+	case "finished":
+		subject = fmt.Sprintf("Booking Finished: %s", resourceName)
+		mainText = fmt.Sprintf(
+			"%s has finished using *%s* (%s). Please review the after-photo proof for any missing or damaged items.",
+			ownerName, resourceName, timeRange,
+		)
+	default:
+		subject = fmt.Sprintf("Booking Update: %s", resourceName)
+		mainText = fmt.Sprintf("%s's booking of *%s* (%s) status is now: %s.", ownerName, resourceName, timeRange, kind)
+	}
+
+	if note != "" {
+		mainText += fmt.Sprintf("\n\nNote: %s", note)
+	}
+
+	textBody := mainText
 	htmlBody := "<p>" + htmlEscapeNewlines(mainText) + "</p>"
 
 	return subject, htmlBody, textBody

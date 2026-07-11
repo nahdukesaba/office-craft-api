@@ -107,6 +107,32 @@ func (r *UserRepository) UpdateStatus(ctx context.Context, id, status string) (*
 	return u, nil
 }
 
+// ListAdmins returns every active (approved, not deleted) admin - used to
+// fan out the "new booking request / started / finished" notifications to
+// whoever should review them.
+func (r *UserRepository) ListAdmins(ctx context.Context) ([]models.AppUser, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT `+userColumns+`
+		FROM public.app_users
+		WHERE deleted_at IS NULL AND role = 'admin' AND status = 'approved'
+		ORDER BY created_at ASC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []models.AppUser
+	for rows.Next() {
+		u, err := scanUser(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *u)
+	}
+	return out, rows.Err()
+}
+
 // UpdatePhone lets a user set/change their own WhatsApp number. No route
 // wires this up yet (out of scope for the notify feature itself) - it's
 // here so adding a "my profile" endpoint later is a one-handler change.
