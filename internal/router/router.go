@@ -59,12 +59,12 @@ func Setup(app *fiber.App, cfg *config.Config, pool *pgxpool.Pool) {
 	public.Get("/bookings/resource/:resourceId", publicHandler.BookingsForResource)
 
 	// -------- Resources --------
-	resources := api.Group("/resources", requireAuth)
+	resources := api.Group("/resources")
 	resources.Get("/", resourceHandler.List)
-	resources.Get("/:id", resourceHandler.Get)
-	resources.Post("/", requireAdmin, resourceHandler.Create)
-	resources.Put("/:id", requireAdmin, resourceHandler.Update)
-	resources.Delete("/:id", requireAdmin, resourceHandler.Delete)
+	resources.Get("/:id", resourceHandler.Get, requireAuth)
+	resources.Post("/", requireAdmin, resourceHandler.Create, requireAuth)
+	resources.Put("/:id", requireAdmin, resourceHandler.Update, requireAuth)
+	resources.Delete("/:id", requireAdmin, resourceHandler.Delete, requireAuth)
 
 	// -------- Bookings --------
 	// Lifecycle: pending -> approved -> in_use -> finished, with
