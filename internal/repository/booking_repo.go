@@ -295,13 +295,25 @@ func (r *BookingRepository) List(ctx context.Context, f BookingFilter) ([]models
 // ListPublic returns all bookings (optionally scoped to a resource) without
 // pagination, for unauthenticated calendar/availability views. Only minimal
 // fields are exposed by the handler layer.
-func (r *BookingRepository) ListPublic(ctx context.Context, resourceID string) ([]models.Booking, error) {
+func (r *BookingRepository) ListPublic(ctx context.Context, resourceID string, month int, year int) ([]models.Booking, error) {
 	query := fmt.Sprintf(`SELECT %s FROM public.bookings b WHERE b.deleted_at IS NULL AND b.status IN ('pending','approved','in_use','finished')`, bookingColumns)
 	args := []interface{}{}
+	arg := 1
 	if resourceID != "" {
-		query += " AND b.resource_id = $1"
+		query += fmt.Sprintf(" AND b.resource_id = $%d", arg)
 		args = append(args, resourceID)
+		arg++
 	}
+	if year != 0 {
+		if month != 0 {
+			query += fmt.Sprintf(" AND EXTRACT(MONTH FROM b.start_time) = $%d", arg)
+			arg++
+		}
+		query += fmt.Sprintf(" AND EXTRACT(YEAR FROM b.start_time) = $%d", arg)
+		arg++
+		args = append(args, month, year)
+	}
+
 	query += " ORDER BY b.start_time ASC"
 
 	rows, err := r.pool.Query(ctx, query, args...)

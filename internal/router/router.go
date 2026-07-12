@@ -32,7 +32,7 @@ func Setup(app *fiber.App, cfg *config.Config, pool *pgxpool.Pool) {
 	bookingHandler := handlers.NewBookingHandler(bookingRepo, resourceRepo, userRepo, proofRepo, eventRepo, bookingSvc)
 	proofHandler := handlers.NewProofHandler(proofRepo, bookingRepo, proofSvc)
 	notifyHandler := handlers.NewNotifyHandler(notifySvc, bookingRepo)
-	publicHandler := handlers.NewPublicHandler(bookingRepo, resourceRepo)
+	publicHandler := handlers.NewPublicHandler(bookingRepo, resourceRepo, userRepo)
 	statsHandler := handlers.NewStatsHandler(bookingRepo, resourceRepo, userRepo)
 	userHandler := handlers.NewUserHandler(userRepo)
 	reportHandler := handlers.NewReportHandler(reportSvc)
