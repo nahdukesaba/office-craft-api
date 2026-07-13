@@ -93,8 +93,8 @@ func Setup(app *fiber.App, cfg *config.Config, pool *pgxpool.Pool) {
 	// -------- Users (admin: approve/reject registrations) --------
 	users := api.Group("/users", requireAuth, requireAdmin)
 	users.Get("/", userHandler.List)
-	users.Put("/:id/approve", userHandler.Approve)
-	users.Put("/:id/reject", userHandler.Reject)
+	users.Post("/:id/approve", userHandler.Approve)
+	users.Post("/:id/reject", userHandler.Reject)
 
 	// -------- Reports (admin: date-range export & insights) --------
 	reports := api.Group("/reports", requireAuth, requireAdmin)
