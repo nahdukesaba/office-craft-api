@@ -1,6 +1,6 @@
 param(
     [string]$TaskName = "OfficeCraft-Tailscale-Funnel",
-    [int]$Port = 8080,
+    [int]$Port = 8081,
     [string]$TailscaleExe = "C:\Program Files\Tailscale\tailscale.exe"
 )
 
@@ -32,7 +32,6 @@ while (`$true) {
     Start-Sleep -Seconds 5
 }
 
-& `$tailscale serve --bg http://127.0.0.1:$Port
 & `$tailscale funnel --bg $Port
 "@ | Set-Content -Encoding UTF8 $tempScript
 
