@@ -12,9 +12,9 @@
 
 param(
     [string]$ServiceName = "SILAPETBackend",
-    [string]$InstallDir  = "D:\Kerja\dev\office-craft-api",
+    [string]$InstallDir  = "E:\Server\Apps\office-craft-api",
     [string]$ExeName     = "office-craft-api.exe",
-    [string]$NssmPath    = "D:\Kerja\dev\nssm-2.24\nssm-2.24\win64",
+    [string]$NssmPath    = "E:\Server\Apps\NSSM\win64",
     [string]$EnvFile     = "$InstallDir\.env"
 )
 

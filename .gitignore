@@ -11,3 +11,6 @@
 
 # Logs
 logs/
+
+# Builds
+build/
