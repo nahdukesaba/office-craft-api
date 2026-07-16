@@ -81,12 +81,12 @@ func (s *BookingService) Validate(ctx context.Context, in models.BookingInput) e
 	if !in.EndTime.After(in.StartTime) {
 		return apperror.BadRequest("INVALID_RANGE", "end time must be after start time")
 	}
-	if !isOnInterval(in.StartTime) || !isOnInterval(in.EndTime) {
-		return apperror.BadRequest("INVALID_INTERVAL", "booking times must fall on 30-minute intervals")
-	}
-	if in.EndTime.Sub(in.StartTime) > maxBookingDuration {
-		return apperror.BadRequest("TOO_LONG", "bookings cannot exceed 4 hours")
-	}
+	//if !isOnInterval(in.StartTime) || !isOnInterval(in.EndTime) {
+	//	return apperror.BadRequest("INVALID_INTERVAL", "booking times must fall on 30-minute intervals")
+	//}
+	//if in.EndTime.Sub(in.StartTime) > maxBookingDuration {
+	//	return apperror.BadRequest("TOO_LONG", "bookings cannot exceed 4 hours")
+	//}
 	if in.StartTime.Before(time.Now()) {
 		return apperror.BadRequest("PAST_BOOKING", "booking start time must be in the future")
 	}
