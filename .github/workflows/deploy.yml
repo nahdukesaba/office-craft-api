@@ -10,7 +10,7 @@ jobs:
     # This job must run on a self-hosted Windows runner that lives on (or has
     # network access to) the target Windows 10 machine, since it stops/starts
     # a local NSSM service and copies files onto disk directly.
-    runs-on: [self-hosted, windows]
+    runs-on: self-hosted
 
     env:
       SERVICE_NAME: SILAPETBackend
