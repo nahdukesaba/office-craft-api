@@ -38,12 +38,12 @@ jobs:
       - name: Build Windows binary
         run: |
           go build -ldflags="-s -w" -o build/${{ env.EXE_NAME }} ./cmd/server
-        shell: pwsh
+        shell: powershell
 
       - name: Stage migrations alongside binary
         run: |
           Copy-Item -Path migrations -Destination build\migrations -Recurse -Force
-        shell: pwsh
+        shell: powershell
 
       - name: Stop service, replace binary, restart
         run: |
@@ -52,7 +52,7 @@ jobs:
             -InstallDir $env:INSTALL_DIR `
             -ExeName $env:EXE_NAME `
             -NewBinaryPath "build\$env:EXE_NAME"
-        shell: pwsh
+        shell: powershell
 
       - name: Health check
         run: |
@@ -62,4 +62,4 @@ jobs:
             throw "Health check failed with status $($response.StatusCode)"
           }
           Write-Host "Health check passed."
-        shell: pwsh
+        shell: powershell
