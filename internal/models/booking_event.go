@@ -4,14 +4,16 @@ import "time"
 
 // Event types recorded in booking_events. One row per status transition.
 const (
-	EventCreated      = "created"
-	EventApproved     = "approved"
-	EventAutoRejected = "auto_rejected"
-	EventRejected     = "rejected"
-	EventStarted      = "started"
-	EventFinished     = "finished"
-	EventCancelled    = "cancelled"
-	EventRevoked      = "revoked"
+	EventCreated           = "created"
+	EventApproved          = "approved"
+	EventAutoRejected      = "auto_rejected"
+	EventRejected          = "rejected"
+	EventStarted           = "started"
+	EventFinished          = "finished"
+	EventCancelled         = "cancelled"
+	EventRevoked           = "revoked"
+	EventClosed            = "closed"
+	EventRevisionRequested = "revision_requested"
 )
 
 // BookingEvent mirrors public.booking_events - one row per status change.

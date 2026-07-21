@@ -17,9 +17,10 @@ import (
 // (revoke's resulting status) aren't in this set but absolutely should
 // still notify the owner.
 var notifiableStatuses = map[string]bool{
-	models.BookingStatusApproved: true,
-	models.BookingStatusInUse:    true,
-	models.BookingStatusFinished: true,
+	models.BookingStatusApproved:      true,
+	models.BookingStatusInUse:         true,
+	models.BookingStatusFinished:      true,
+	models.BookingStatusNeedsRevision: true,
 }
 
 type NotifyService struct {
@@ -58,7 +59,7 @@ func (s *NotifyService) Notify(ctx context.Context, bookingID, note string) (*No
 		return nil, apperror.NotFound("BOOKING_NOT_FOUND", "booking not found")
 	}
 	if !notifiableStatuses[booking.Status] {
-		return nil, apperror.BadRequest("NOTIFY_NOT_ALLOWED", "notifications are only allowed for approved, in_use, or finished bookings")
+		return nil, apperror.BadRequest("NOTIFY_NOT_ALLOWED", "notifications are only allowed for approved, in_use, finished, or needs_revision bookings")
 	}
 
 	owner, err := s.users.GetByID(ctx, booking.UserID)

@@ -264,7 +264,7 @@ func (s *BookingService) hasProof(ctx context.Context, bookingID, kind string) (
 	return false, nil
 }
 
-// Finish transitions an in_use booking to finished. Requires at least one
+// Finish transitions an in_use or needs_revision booking to finished. Requires at least one
 // "after" proof photo to already be recorded.
 func (s *BookingService) Finish(ctx context.Context, actorID, id string) (*models.Booking, error) {
 	booking, err := s.bookings.GetByID(ctx, id)
@@ -274,8 +274,8 @@ func (s *BookingService) Finish(ctx context.Context, actorID, id string) (*model
 	if booking == nil {
 		return nil, apperror.NotFound("BOOKING_NOT_FOUND", "booking not found")
 	}
-	if booking.Status != models.BookingStatusInUse {
-		return nil, apperror.Conflict("INVALID_STATUS", "booking must be in_use before it can be finished")
+	if booking.Status != models.BookingStatusInUse && booking.Status != models.BookingStatusNeedsRevision {
+		return nil, apperror.Conflict("INVALID_STATUS", "booking must be in_use or needs_revision before it can be finished")
 	}
 
 	hasAfter, err := s.hasProof(ctx, id, models.ProofKindAfter)
@@ -290,8 +290,57 @@ func (s *BookingService) Finish(ctx context.Context, actorID, id string) (*model
 	if err != nil {
 		return nil, err
 	}
-	s.recordEvent(ctx, id, models.EventFinished, strPtr(models.BookingStatusInUse), models.BookingStatusFinished, actorID, "")
+	s.recordEvent(ctx, id, models.EventFinished, strPtr(booking.Status), models.BookingStatusFinished, actorID, "")
 	s.fireAdminNotify(*updated, "finished", "")
+	return updated, nil
+}
+
+// Close transitions a finished booking to closed (admin only).
+func (s *BookingService) Close(ctx context.Context, actorID, id string, note string) (*models.Booking, error) {
+	booking, err := s.bookings.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if booking == nil {
+		return nil, apperror.NotFound("BOOKING_NOT_FOUND", "booking not found")
+	}
+	if booking.Status != models.BookingStatusFinished {
+		return nil, apperror.Conflict("INVALID_STATUS", "booking must be finished before it can be closed")
+	}
+
+	updated, err := s.bookings.SetStatusWithNotes(ctx, id, models.BookingStatusClosed, note)
+	if err != nil {
+		return nil, err
+	}
+	s.recordEvent(ctx, id, models.EventClosed, strPtr(models.BookingStatusFinished), models.BookingStatusClosed, actorID, note)
+	// No notification for close - it's just a final sign-off
+	return updated, nil
+}
+
+// RequestRevision transitions a finished booking to needs_revision (admin only)
+// and sends a notification to the owner with the provided note.
+func (s *BookingService) RequestRevision(ctx context.Context, actorID, id string, note string) (*models.Booking, error) {
+	booking, err := s.bookings.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if booking == nil {
+		return nil, apperror.NotFound("BOOKING_NOT_FOUND", "booking not found")
+	}
+	if booking.Status != models.BookingStatusFinished {
+		return nil, apperror.Conflict("INVALID_STATUS", "booking must be finished before requesting revision")
+	}
+	if note == "" {
+		return nil, apperror.BadRequest("VALIDATION_ERROR", "note is required when requesting revision")
+	}
+
+	updated, err := s.bookings.SetStatusWithNotes(ctx, id, models.BookingStatusNeedsRevision, note)
+	if err != nil {
+		return nil, err
+	}
+	s.recordEvent(ctx, id, models.EventRevisionRequested, strPtr(models.BookingStatusFinished), models.BookingStatusNeedsRevision, actorID, note)
+	// Notify the owner that revision is requested
+	s.fireNotify(*updated, "revision_requested", note)
 	return updated, nil
 }
 

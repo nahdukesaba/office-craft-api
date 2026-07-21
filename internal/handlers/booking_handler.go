@@ -221,7 +221,7 @@ func (h *BookingHandler) Start(c *fiber.Ctx) error {
 	return c.JSON(h.enrich(c.Context(), *updated))
 }
 
-// Finish transitions an in_use booking to finished.
+// Finish transitions an in_use or needs_revision booking to finished.
 func (h *BookingHandler) Finish(c *fiber.Ctx) error {
 	b, err := h.bookings.GetByID(c.Context(), c.Params("id"))
 	if err != nil {
@@ -234,6 +234,57 @@ func (h *BookingHandler) Finish(c *fiber.Ctx) error {
 		return apperror.Forbidden("FORBIDDEN", "you do not have access to this booking")
 	}
 	updated, err := h.svc.Finish(c.Context(), middleware.UserIDFromCtx(c), b.ID)
+	if err != nil {
+		return err
+	}
+	return c.JSON(h.enrich(c.Context(), *updated))
+}
+
+// Close transitions a finished booking to closed (admin only).
+func (h *BookingHandler) Close(c *fiber.Ctx) error {
+	b, err := h.bookings.GetByID(c.Context(), c.Params("id"))
+	if err != nil {
+		return apperror.Internal("failed to load booking")
+	}
+	if b == nil {
+		return apperror.NotFound("BOOKING_NOT_FOUND", "booking not found")
+	}
+	if !h.canAccess(c, b) {
+		return apperror.Forbidden("FORBIDDEN", "you do not have access to this booking")
+	}
+
+	var in models.CloseInput
+	if err := c.BodyParser(&in); err != nil {
+		return apperror.BadRequest("INVALID_BODY", "invalid request body")
+	}
+
+	updated, err := h.svc.Close(c.Context(), middleware.UserIDFromCtx(c), b.ID, in.Note)
+	if err != nil {
+		return err
+	}
+	return c.JSON(h.enrich(c.Context(), *updated))
+}
+
+// RequestRevision transitions a finished booking to needs_revision (admin only)
+// and sends a notification to the owner with the provided note.
+func (h *BookingHandler) RequestRevision(c *fiber.Ctx) error {
+	b, err := h.bookings.GetByID(c.Context(), c.Params("id"))
+	if err != nil {
+		return apperror.Internal("failed to load booking")
+	}
+	if b == nil {
+		return apperror.NotFound("BOOKING_NOT_FOUND", "booking not found")
+	}
+	if !h.canAccess(c, b) {
+		return apperror.Forbidden("FORBIDDEN", "you do not have access to this booking")
+	}
+
+	var in models.RequestRevisionInput
+	if err := c.BodyParser(&in); err != nil {
+		return apperror.BadRequest("INVALID_BODY", "invalid request body")
+	}
+
+	updated, err := h.svc.RequestRevision(c.Context(), middleware.UserIDFromCtx(c), b.ID, in.Note)
 	if err != nil {
 		return err
 	}
