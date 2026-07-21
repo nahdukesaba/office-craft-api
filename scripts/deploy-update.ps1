@@ -7,9 +7,9 @@
 
 param(
     [string]$ServiceName = "SILAPETBackend",
-    [string]$InstallDir  = "E:\Server\Apps\office-craft-api",
+    [string]$InstallDir  = "E:\Server\Apps\office-craft-api\",
     [string]$ExeName     = "office-craft-api.exe",
-    [string]$NewBinaryPath = "E:\Server\Projects\office-craft-api",
+    [string]$NewBinaryPath = "E:\Server\Apps\github-runner-silapet\_work\office-craft-api\office-craft-api\build\",
     [string]$NssmPath    = "E:\Server\Apps\NSSM\win64"
 )
 

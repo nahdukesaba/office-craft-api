@@ -51,7 +51,7 @@ jobs:
             -ServiceName $env:SERVICE_NAME `
             -InstallDir $env:INSTALL_DIR `
             -ExeName $env:EXE_NAME `
-            -NewBinaryPath "build\$env:EXE_NAME"
+            -NewBinaryPath "build"
         shell: powershell
 
       - name: Health check
