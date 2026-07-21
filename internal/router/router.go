@@ -69,8 +69,8 @@ func Setup(app *fiber.App, cfg *config.Config, pool *pgxpool.Pool) {
 	resources.Delete("/:id", resourceHandler.Delete, requireAuth, requireAdmin)
 
 	// -------- Bookings --------
-	// Lifecycle: pending -> approved -> in_use -> finished, with
-	// rejected/cancelled as terminal off-ramps.
+	// Lifecycle: pending -> approved -> in_use -> finished -> closed, with
+	// rejected/cancelled as terminal off-ramps and needs_revision as a revision state.
 	bookings := api.Group("/bookings", requireAuth)
 	bookings.Get("/", bookingHandler.List)
 	bookings.Get("/:id", bookingHandler.Get)
@@ -81,6 +81,8 @@ func Setup(app *fiber.App, cfg *config.Config, pool *pgxpool.Pool) {
 	bookings.Put("/:id/start", bookingHandler.Start) // owner or admin, gated by date window in the service
 	bookings.Put("/:id/finish", bookingHandler.Finish)
 	bookings.Put("/:id/cancel", bookingHandler.Cancel)
+	bookings.Put("/:id/close", requireAdmin, bookingHandler.Close)
+	bookings.Put("/:id/request-revision", requireAdmin, bookingHandler.RequestRevision)
 	bookings.Post("/:id/notify", notifyHandler.Notify)
 	bookings.Get("/:id/history", bookingHandler.History)
 

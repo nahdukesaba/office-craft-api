@@ -4,20 +4,30 @@ import "time"
 
 // Booking lifecycle: pending -> approved -> in_use -> finished, with
 // rejected/cancelled as terminal off-ramps from pending/approved/in_use.
+// From "finished", an admin either closes the booking (final sign-off,
+// after reviewing the before/after proof photos) or requests a revision if
+// the proofs are insufficient - which sends it to "needs_revision" until
+// the user uploads better after-photos and calls /finish again.
 const (
-	BookingStatusPending   = "pending"
-	BookingStatusApproved  = "approved"
-	BookingStatusInUse     = "in_use"
-	BookingStatusFinished  = "finished"
-	BookingStatusRejected  = "rejected"
-	BookingStatusCancelled = "cancelled"
+	BookingStatusPending       = "pending"
+	BookingStatusApproved      = "approved"
+	BookingStatusInUse         = "in_use"
+	BookingStatusFinished      = "finished"
+	BookingStatusNeedsRevision = "needs_revision"
+	BookingStatusClosed        = "closed"
+	BookingStatusRejected      = "rejected"
+	BookingStatusCancelled     = "cancelled"
 )
 
 // StatusesBlockingNewBooking are the statuses that make a resource
 // unavailable for a new overlapping booking. A "pending" booking no longer
 // blocks other pending requests - only a slot that is actually spoken for
-// (approved/in_use) or was already used (finished) does.
-var StatusesBlockingNewBooking = []string{BookingStatusApproved, BookingStatusInUse, BookingStatusFinished}
+// (approved/in_use) or was already used (finished/needs_revision/closed)
+// does.
+var StatusesBlockingNewBooking = []string{
+	BookingStatusApproved, BookingStatusInUse, BookingStatusFinished,
+	BookingStatusNeedsRevision, BookingStatusClosed,
+}
 
 // Booking mirrors public.bookings. Date/EndDate are derived (Asia/Jakarta
 // calendar date of StartTime/EndTime) for display convenience - they are
@@ -63,6 +73,16 @@ type RejectInput struct {
 type RevokeInput struct {
 	AdminNotes string `json:"adminNotes"`
 	Reason     string `json:"reason"`
+}
+
+// CloseInput is the shape accepted on PUT /bookings/:id/close.
+type CloseInput struct {
+	Note string `json:"note"`
+}
+
+// RequestRevisionInput is the shape accepted on PUT /bookings/:id/request-revision.
+type RequestRevisionInput struct {
+	Note string `json:"note"`
 }
 
 // ApproveBookingResponse is returned by PUT /bookings/:id/approve.
