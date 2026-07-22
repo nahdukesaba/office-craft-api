@@ -201,6 +201,12 @@ func buildNotificationContent(kind, ownerName, resourceName string, booking mode
 			"Hi %s, your approved booking for *%s* (%s) has been cancelled by an admin.",
 			ownerName, resourceName, timeRange,
 		)
+	case models.EventRevisionRequested:
+		subject = fmt.Sprintf("Reminder: Your Booking for %s needs attention!", resourceName)
+		mainText = fmt.Sprintf(
+			"Hi %s, your booking for *%s* (%s) needs more attention! Please read the admin notes for further information.",
+			ownerName, resourceName, timeRange,
+		)
 	default:
 		subject = fmt.Sprintf("Update on your booking of %s", resourceName)
 		mainText = fmt.Sprintf("Hi %s, your booking of *%s* (%s) status is now: %s.", ownerName, resourceName, timeRange, kind)

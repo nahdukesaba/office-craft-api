@@ -327,8 +327,8 @@ func (s *BookingService) RequestRevision(ctx context.Context, actorID, id string
 	if booking == nil {
 		return nil, apperror.NotFound("BOOKING_NOT_FOUND", "booking not found")
 	}
-	if booking.Status != models.BookingStatusFinished {
-		return nil, apperror.Conflict("INVALID_STATUS", "booking must be finished before requesting revision")
+	if booking.Status != models.BookingStatusFinished && booking.Status != models.BookingStatusInUse {
+		return nil, apperror.Conflict("INVALID_STATUS", "booking must either be finished or in_use before requesting revision")
 	}
 	if note == "" {
 		return nil, apperror.BadRequest("VALIDATION_ERROR", "note is required when requesting revision")
@@ -338,7 +338,7 @@ func (s *BookingService) RequestRevision(ctx context.Context, actorID, id string
 	if err != nil {
 		return nil, err
 	}
-	s.recordEvent(ctx, id, models.EventRevisionRequested, strPtr(models.BookingStatusFinished), models.BookingStatusNeedsRevision, actorID, note)
+	s.recordEvent(ctx, id, models.EventRevisionRequested, strPtr(booking.Status), models.BookingStatusNeedsRevision, actorID, note)
 	// Notify the owner that revision is requested
 	s.fireNotify(*updated, "revision_requested", note)
 	return updated, nil
