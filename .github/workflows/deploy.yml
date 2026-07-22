@@ -10,6 +10,8 @@ jobs:
     # This job must run on a self-hosted Windows runner that lives on (or has
     # network access to) the target Windows 10 machine, since it stops/starts
     # a local NSSM service and copies files onto disk directly.
+    # run this to fix build vcs
+    # git config --global --add safe.directory "E:/Server/Apps/github-runner-silapet/_work/office-craft-api/office-craft-api"
     runs-on: self-hosted
 
     env:
@@ -32,12 +34,12 @@ jobs:
         run: go mod download
 
       - name: Run tests
-        run: go test ./...
+        run: go test -buildvcs=false ./...
         continue-on-error: false
 
       - name: Build Windows binary
         run: |
-          go build -ldflags="-s -w" -o build/${{ env.EXE_NAME }} ./cmd/server
+          go build -buildvcs=false -ldflags="-s -w" -o build/${{ env.EXE_NAME }} ./cmd/server
         shell: powershell
 
       - name: Stage migrations alongside binary
@@ -51,7 +53,7 @@ jobs:
             -ServiceName $env:SERVICE_NAME `
             -InstallDir $env:INSTALL_DIR `
             -ExeName $env:EXE_NAME `
-            -NewBinaryPath "build"
+            -NewBinaryPath "build\$env:EXE_NAME"
         shell: powershell
 
       - name: Health check
