@@ -165,7 +165,7 @@ func (h *BookingHandler) Reject(c *fiber.Ctx) error {
 	var in models.RejectInput
 	_ = c.BodyParser(&in) // body is optional
 
-	updated, err := h.svc.Reject(c.Context(), middleware.UserIDFromCtx(c), b.ID, in.Note)
+	updated, err := h.svc.Reject(c.Context(), middleware.UserIDFromCtx(c), b.ID, in.AdminNotes)
 	if err != nil {
 		return err
 	}
@@ -258,7 +258,7 @@ func (h *BookingHandler) Close(c *fiber.Ctx) error {
 		return apperror.BadRequest("INVALID_BODY", "invalid request body")
 	}
 
-	updated, err := h.svc.Close(c.Context(), middleware.UserIDFromCtx(c), b.ID, in.Note)
+	updated, err := h.svc.Close(c.Context(), middleware.UserIDFromCtx(c), b.ID, in.AdminNotes)
 	if err != nil {
 		return err
 	}
@@ -284,7 +284,7 @@ func (h *BookingHandler) RequestRevision(c *fiber.Ctx) error {
 		return apperror.BadRequest("INVALID_BODY", "invalid request body")
 	}
 
-	updated, err := h.svc.RequestRevision(c.Context(), middleware.UserIDFromCtx(c), b.ID, in.Note)
+	updated, err := h.svc.RequestRevision(c.Context(), middleware.UserIDFromCtx(c), b.ID, in.AdminNotes)
 	if err != nil {
 		return err
 	}

@@ -66,7 +66,7 @@ type BookingInput struct {
 
 // RejectInput is the shape accepted on PUT /bookings/:id/reject.
 type RejectInput struct {
-	Note string `json:"note"`
+	AdminNotes string `json:"adminNotes"`
 }
 
 // RevokeInput is the shape accepted on PUT /bookings/:id/revoke.
@@ -77,12 +77,12 @@ type RevokeInput struct {
 
 // CloseInput is the shape accepted on PUT /bookings/:id/close.
 type CloseInput struct {
-	Note string `json:"note"`
+	AdminNotes string `json:"adminNotes"`
 }
 
 // RequestRevisionInput is the shape accepted on PUT /bookings/:id/request-revision.
 type RequestRevisionInput struct {
-	Note string `json:"note"`
+	AdminNotes string `json:"adminNotes"`
 }
 
 // ApproveBookingResponse is returned by PUT /bookings/:id/approve.
