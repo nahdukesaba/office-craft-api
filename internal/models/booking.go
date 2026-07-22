@@ -22,11 +22,13 @@ const (
 // StatusesBlockingNewBooking are the statuses that make a resource
 // unavailable for a new overlapping booking. A "pending" booking no longer
 // blocks other pending requests - only a slot that is actually spoken for
-// (approved/in_use) or was already used (finished/needs_revision/closed)
-// does.
+// (approved/in_use) or was already used (finished/needs_revision)
+// does. Closed status no longer blocks other pending requests, since
+// the user and admin already completed all lifecycle, and resource
+// are ready to be booked again
 var StatusesBlockingNewBooking = []string{
 	BookingStatusApproved, BookingStatusInUse, BookingStatusFinished,
-	BookingStatusNeedsRevision, BookingStatusClosed,
+	BookingStatusNeedsRevision,
 }
 
 // Booking mirrors public.bookings. Date/EndDate are derived (Asia/Jakarta
