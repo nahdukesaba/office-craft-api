@@ -54,6 +54,7 @@ func Setup(app *fiber.App, cfg *config.Config, pool *pgxpool.Pool) {
 	auth.Get("/me", requireAuth, authHandler.Me)
 	auth.Put("/password", requireAuth, authHandler.ChangePassword)
 	auth.Put("/reset", requireAuth, requireAdmin, authHandler.AdminResetPassword)
+	auth.Put("/put", requireAuth, authHandler.ChangePhoneNumber)
 
 	// -------- Public (no auth) --------
 	public := api.Group("/public")

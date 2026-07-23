@@ -269,6 +269,22 @@ func (s *AuthService) AdminResetPassword(ctx context.Context, userID string) (st
 	return newPassword, nil
 }
 
+// ChangePhoneNumber updates partial the user's phone number in app_users table
+func (s *AuthService) ChangePhoneNumber(ctx context.Context, user *models.AppUser, phone string) error {
+	var phonePtr *string
+	if strings.HasPrefix(phone, "0") {
+		phone = "62" + phone[1:]
+	}
+	phonePtr = &phone
+
+	user, err := s.users.Upsert(ctx, user.ID, user.Email, user.FullName, phonePtr, user.Role, user.Status)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
 const tempPasswordChars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%"
 
 // generateTempPassword produces a 14-char cryptographically random password

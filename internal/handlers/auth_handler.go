@@ -189,3 +189,35 @@ func (h *AuthHandler) AdminResetPassword(c *fiber.Ctx) error {
 		"emailSent":         emailSent,
 	})
 }
+
+type changePhoneNumberRequest struct {
+	Phone string `json:"phone"`
+}
+
+func (h *AuthHandler) ChangePhoneNumber(c *fiber.Ctx) error {
+	var req changePhoneNumberRequest
+	if err := c.BodyParser(&req); err != nil {
+		return apperror.BadRequest("INVALID_BODY", "invalid request body")
+	}
+	if req.Phone == "" {
+		return apperror.BadRequest("VALIDATION_ERROR", "Phone number are required")
+	}
+
+	userID := middleware.UserIDFromCtx(c)
+	user, err := h.users.GetByID(c.Context(), userID)
+	if err != nil {
+		return apperror.Internal("failed to load current user")
+	}
+	if user == nil {
+		return apperror.NotFound("USER_NOT_FOUND", "user not found")
+	}
+
+	if err := h.auth.ChangePhoneNumber(c.Context(), user, req.Phone); err != nil {
+		if ae, ok := err.(*services.AuthError); ok {
+			return apperror.New(ae.StatusCode, ae.Code, ae.Message)
+		}
+		return apperror.Internal("failed to change phone number")
+	}
+
+	return c.JSON(fiber.Map{"message": "phone number updated"})
+}
