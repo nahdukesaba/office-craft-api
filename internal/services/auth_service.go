@@ -9,6 +9,7 @@ import (
 	"io"
 	"math/big"
 	"net/http"
+	"strings"
 	"time"
 
 	"office-craft-api/internal/config"
@@ -150,6 +151,9 @@ func (s *AuthService) Register(ctx context.Context, email, password, fullName, p
 	}
 
 	var phonePtr *string
+	if strings.HasPrefix(phone, "0") {
+		phone = "62" + phone[1:]
+	}
 	if phone != "" {
 		phonePtr = &phone
 	}
