@@ -19,10 +19,10 @@ func Setup(app *fiber.App, cfg *config.Config, pool *pgxpool.Pool) {
 	proofRepo := repository.NewProofRepository(pool)
 	eventRepo := repository.NewBookingEventRepository(pool)
 
-	authSvc := services.NewAuthService(cfg, userRepo)
 	emailSvc := services.NewEmailService(cfg)
 	whatsappSvc := services.NewWhatsAppService(cfg)
 	notifySvc := services.NewNotifyService(bookingRepo, userRepo, resourceRepo, emailSvc, whatsappSvc)
+	authSvc := services.NewAuthService(cfg, userRepo, notifySvc)
 	bookingSvc := services.NewBookingService(bookingRepo, resourceRepo, userRepo, proofRepo, eventRepo, notifySvc)
 	proofSvc := services.NewProofService(bookingRepo)
 	reportSvc := services.NewReportService(bookingRepo, resourceRepo, userRepo)

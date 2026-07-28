@@ -21,13 +21,15 @@ type AuthService struct {
 	cfg    *config.Config
 	users  *repository.UserRepository
 	client *http.Client
+	notify *NotifyService
 }
 
-func NewAuthService(cfg *config.Config, users *repository.UserRepository) *AuthService {
+func NewAuthService(cfg *config.Config, users *repository.UserRepository, notify *NotifyService) *AuthService {
 	return &AuthService{
 		cfg:    cfg,
 		users:  users,
 		client: &http.Client{Timeout: 15 * time.Second},
+		notify: notify,
 	}
 }
 
@@ -162,7 +164,7 @@ func (s *AuthService) Register(ctx context.Context, email, password, fullName, p
 	if err != nil {
 		return nil, err
 	}
-
+	s.fireAdminNotify(*user, "registered", "")
 	return user, nil
 }
 
@@ -302,4 +304,11 @@ func generateTempPassword() (string, error) {
 		b[i] = tempPasswordChars[n.Int64()]
 	}
 	return string(b), nil
+}
+
+// fireAdminNotify is fireNotify's counterpart for the admin-facing
+// direction (new request / started / finished) - same background-goroutine
+// rationale, different recipient set.
+func (s *AuthService) fireAdminNotify(user models.AppUser, kind, note string) {
+	go s.notify.NotifyAdminsForNewUser(context.Background(), user, kind, note)
 }

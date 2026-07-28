@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"time"
 
 	"office-craft-api/internal/apperror"
 	"office-craft-api/internal/models"
@@ -249,6 +250,9 @@ func buildAdminNotificationContent(kind, ownerName, resourceName string, booking
 			"%s has finished using *%s* (%s). Please review the after-photo proof for any missing or damaged items.",
 			ownerName, resourceName, timeRange,
 		)
+	case "registered":
+		subject = fmt.Sprintf("New User Registered: %s", ownerName)
+		mainText = fmt.Sprintf("%s registered using *%s*. Please review the registered user.", ownerName, resourceName)
 	default:
 		subject = fmt.Sprintf("Booking Update: %s", resourceName)
 		mainText = fmt.Sprintf("%s's booking of *%s* (%s) status is now: %s.", ownerName, resourceName, timeRange, kind)
@@ -295,4 +299,38 @@ func htmlEscapeNewlines(s string) string {
 		}
 	}
 	return escaped
+}
+
+// NotifyAdminsForNewUser fans a notification out to every active admin -
+// used for "new registered user" so admin can approve/reject the user.
+// Best-effort, like NotifyForAction: never returns an error, just logs problems.
+func (s *NotifyService) NotifyAdminsForNewUser(ctx context.Context, user models.AppUser, kind, note string) {
+	admins, err := s.users.ListAdmins(ctx)
+	if err != nil {
+		log.Printf("notify: could not list admins for new user %s (kind=%s): %v", user.ID, kind, err)
+		return
+	}
+	if len(admins) == 0 {
+		return
+	}
+
+	dummyBooking := models.Booking{
+		StartTime: time.Now(),
+		EndTime:   time.Now(),
+	}
+
+	subject, htmlBody, textBody := buildAdminNotificationContent(kind, user.FullName, user.Email, dummyBooking, note)
+
+	for _, admin := range admins {
+		if err := s.email.Send(admin.Email, admin.FullName, subject, htmlBody); err != nil {
+			log.Printf("notify: admin email send failed (admin=%s, user=%s, kind=%s): %v", admin.ID, user.FullName, kind, err)
+		}
+		phone := ""
+		if admin.Phone != nil {
+			phone = *admin.Phone
+		}
+		if err := s.whatsapp.Send(ctx, phone, textBody); err != nil {
+			log.Printf("notify: admin whatsapp send failed (admin=%s, user=%s, kind=%s): %v", admin.ID, user.FullName, kind, err)
+		}
+	}
 }
