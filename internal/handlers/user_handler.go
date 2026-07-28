@@ -6,14 +6,16 @@ import (
 	"office-craft-api/internal/apperror"
 	"office-craft-api/internal/models"
 	"office-craft-api/internal/repository"
+	"office-craft-api/internal/services"
 )
 
 type UserHandler struct {
-	users *repository.UserRepository
+	users  *repository.UserRepository
+	notify *services.NotifyService
 }
 
-func NewUserHandler(users *repository.UserRepository) *UserHandler {
-	return &UserHandler{users: users}
+func NewUserHandler(users *repository.UserRepository, notify *services.NotifyService) *UserHandler {
+	return &UserHandler{users: users, notify: notify}
 }
 
 // List returns all users, optionally filtered by ?status=pending|approved|rejected.
@@ -69,5 +71,6 @@ func (h *UserHandler) setStatus(c *fiber.Ctx, status string) error {
 	if user == nil {
 		return apperror.NotFound("USER_NOT_FOUND", "user not found")
 	}
+	h.notify.NotifyUser(c.Context(), *user, status)
 	return c.JSON(user)
 }

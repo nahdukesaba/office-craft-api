@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"time"
-
 	"office-craft-api/internal/apperror"
 	"office-craft-api/internal/models"
 	"office-craft-api/internal/repository"
@@ -301,36 +299,88 @@ func htmlEscapeNewlines(s string) string {
 	return escaped
 }
 
-// NotifyAdminsForNewUser fans a notification out to every active admin -
-// used for "new registered user" so admin can approve/reject the user.
-// Best-effort, like NotifyForAction: never returns an error, just logs problems.
-func (s *NotifyService) NotifyAdminsForNewUser(ctx context.Context, user models.AppUser, kind, note string) {
+// NotifyAdminsForUserEvent fans a notification out to every active admin
+// for a user-account event ("registered", "approved", "rejected") - lets
+// the admin team see new signups needing review, and each other's
+// approve/reject decisions, without polling the Manage Users screen.
+// Best-effort, like NotifyForAction: never returns an error, just logs
+// problems.
+func (s *NotifyService) NotifyAdminsForUserEvent(ctx context.Context, user models.AppUser, kind, note string) {
 	admins, err := s.users.ListAdmins(ctx)
 	if err != nil {
-		log.Printf("notify: could not list admins for new user %s (kind=%s): %v", user.ID, kind, err)
+		log.Printf("notify: could not list admins for user event (user=%s, kind=%s): %v", user.ID, kind, err)
 		return
 	}
 	if len(admins) == 0 {
 		return
 	}
 
-	dummyBooking := models.Booking{
-		StartTime: time.Now(),
-		EndTime:   time.Now(),
-	}
-
-	subject, htmlBody, textBody := buildAdminNotificationContent(kind, user.FullName, user.Email, dummyBooking, note)
+	subject, htmlBody, textBody := buildAdminUserNotificationContent(kind, user.FullName, user.Email, note)
 
 	for _, admin := range admins {
 		if err := s.email.Send(admin.Email, admin.FullName, subject, htmlBody); err != nil {
-			log.Printf("notify: admin email send failed (admin=%s, user=%s, kind=%s): %v", admin.ID, user.FullName, kind, err)
+			log.Printf("notify: admin email send failed (admin=%s, user=%s, kind=%s): %v", admin.ID, user.ID, kind, err)
 		}
 		phone := ""
 		if admin.Phone != nil {
 			phone = *admin.Phone
 		}
 		if err := s.whatsapp.Send(ctx, phone, textBody); err != nil {
-			log.Printf("notify: admin whatsapp send failed (admin=%s, user=%s, kind=%s): %v", admin.ID, user.FullName, kind, err)
+			log.Printf("notify: admin whatsapp send failed (admin=%s, user=%s, kind=%s): %v", admin.ID, user.ID, kind, err)
 		}
+	}
+}
+
+// buildAdminUserNotificationContent is the user-account-event counterpart
+// to buildAdminNotificationContent (which is for booking events) - kept
+// separate rather than shared, since forcing a user event through the
+// booking-shaped builder is exactly the bug this replaces: it required a
+// fake zero-duration "booking" just to satisfy the signature, producing
+// garbled message text like "...'s booking of *email@x.com* (Jul 6, 2026,
+// 14:32 - 14:32 WIB) status is now: registered."
+func buildAdminUserNotificationContent(kind, userFullName, userEmail, note string) (string, string, string) {
+	var subject, mainText string
+	switch kind {
+	case "registered":
+		subject = fmt.Sprintf("New User Registration: %s", userFullName)
+		mainText = fmt.Sprintf(
+			"%s (%s) just registered and is awaiting approval. Please review and approve or reject the account.",
+			userFullName, userEmail,
+		)
+	case models.UserStatusApproved:
+		subject = fmt.Sprintf("User Approved: %s", userFullName)
+		mainText = fmt.Sprintf("%s (%s) has been approved and can now log in.", userFullName, userEmail)
+	case models.UserStatusRejected:
+		subject = fmt.Sprintf("User Rejected: %s", userFullName)
+		mainText = fmt.Sprintf("%s (%s) has been rejected and cannot log in.", userFullName, userEmail)
+	default:
+		subject = fmt.Sprintf("User Account Update: %s", userFullName)
+		mainText = fmt.Sprintf("%s's (%s) account status is now: %s.", userFullName, userEmail, kind)
+	}
+
+	if note != "" {
+		mainText += fmt.Sprintf("\n\nNote: %s", note)
+	}
+
+	textBody := mainText
+	htmlBody := "<p>" + htmlEscapeNewlines(mainText) + "</p>"
+
+	return subject, htmlBody, textBody
+}
+
+// NotifyUser notify user about the decision admin takes regarding the
+// user registration. Called when admin accept / reject registration
+func (s *NotifyService) NotifyUser(ctx context.Context, user models.AppUser, status string) {
+	subject, htmlBody, textBody := buildAdminUserNotificationContent(status, user.FullName, user.Email, "")
+
+	if err := s.email.Send(user.Email, user.FullName, subject, htmlBody); err != nil {
+		log.Printf("notify: user email send failed (user=%s, kind=%s): %v", user.FullName, status, err)
+	}
+	phone := ""
+	if user.Phone != nil {
+		phone = *user.Phone
+	}
+	if err := s.whatsapp.Send(ctx, phone, textBody); err != nil {
+		log.Printf("notify: user whatsapp send failed (user=%s, kind=%s): %v", user.FullName, status, err)
 	}
 }

@@ -310,5 +310,5 @@ func generateTempPassword() (string, error) {
 // direction (new request / started / finished) - same background-goroutine
 // rationale, different recipient set.
 func (s *AuthService) fireAdminNotify(user models.AppUser, kind, note string) {
-	go s.notify.NotifyAdminsForNewUser(context.Background(), user, kind, note)
+	go s.notify.NotifyAdminsForUserEvent(context.Background(), user, kind, note)
 }

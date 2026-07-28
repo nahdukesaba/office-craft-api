@@ -34,7 +34,7 @@ func Setup(app *fiber.App, cfg *config.Config, pool *pgxpool.Pool) {
 	notifyHandler := handlers.NewNotifyHandler(notifySvc, bookingRepo)
 	publicHandler := handlers.NewPublicHandler(bookingRepo, resourceRepo, userRepo)
 	statsHandler := handlers.NewStatsHandler(bookingRepo, resourceRepo, userRepo)
-	userHandler := handlers.NewUserHandler(userRepo)
+	userHandler := handlers.NewUserHandler(userRepo, notifySvc)
 	reportHandler := handlers.NewReportHandler(reportSvc)
 
 	verifier := middleware.NewTokenVerifier(cfg.SupabaseJWTSecret, cfg.SupabaseURL)
