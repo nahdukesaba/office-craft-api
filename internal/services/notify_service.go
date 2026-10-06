@@ -170,6 +170,12 @@ func buildNotificationContent(kind, ownerName, resourceName string, booking mode
 
 	var subject, mainText string
 	switch kind {
+	case "requested":
+		subject = fmt.Sprintf("Booking Request Submitted: %s", resourceName)
+		mainText = fmt.Sprintf(
+			"Hi %s, your booking request for *%s* (%s) has been submitted successfully and is waiting for admin approval.",
+			ownerName, resourceName, timeRange,
+		)
 	case models.BookingStatusApproved:
 		subject = fmt.Sprintf("Booking Approved: %s", resourceName)
 		mainText = fmt.Sprintf(
@@ -366,6 +372,47 @@ func buildAdminUserNotificationContent(kind, userFullName, userEmail, note strin
 	htmlBody := "<p>" + htmlEscapeNewlines(mainText) + "</p>"
 
 	return subject, htmlBody, textBody
+}
+
+// buildUserRegistrationNotificationContent creates the email content
+// sent to users after successful registration.
+// The user should only be informed that registration is received
+// and waiting for admin approval.
+func buildUserRegistrationNotificationContent(userFullName, userEmail string) (string, string, string) {
+	subject := "SILAPET Registration Received"
+
+	mainText := fmt.Sprintf(
+		"Hello %s,\n\nYour SILAPET account registration has been received successfully.\n\nYour account is currently waiting for admin approval. You will receive another notification once your account has been reviewed.\n\nThank you.",
+		userFullName,
+	)
+
+	textBody := mainText
+	htmlBody := "<p>" + htmlEscapeNewlines(mainText) + "</p>"
+
+	return subject, htmlBody, textBody
+}
+
+// NotifyRegistrationReceived sends confirmation email
+// when a new user completes registration.
+func (s *NotifyService) NotifyRegistrationReceived(user models.AppUser) {
+
+	subject, htmlBody, _ := buildUserRegistrationNotificationContent(
+		user.FullName,
+		user.Email,
+	)
+
+	if err := s.email.Send(
+		user.Email,
+		user.FullName,
+		subject,
+		htmlBody,
+	); err != nil {
+		log.Printf(
+			"notify: registration email send failed (user=%s): %v",
+			user.FullName,
+			err,
+		)
+	}
 }
 
 // NotifyUser notify user about the decision admin takes regarding the

@@ -123,6 +123,7 @@ func (s *BookingService) Create(ctx context.Context, userID string, in models.Bo
 	}
 	s.recordEvent(ctx, booking.ID, models.EventCreated, nil, models.BookingStatusPending, userID, "")
 	s.fireAdminNotify(*booking, "requested", "")
+	s.fireNotify(*booking, "requested", "")
 	return booking, nil
 }
 
