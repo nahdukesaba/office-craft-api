@@ -54,7 +54,7 @@ func Setup(app *fiber.App, cfg *config.Config, pool *pgxpool.Pool) {
 	auth.Get("/me", requireAuth, authHandler.Me)
 	auth.Put("/password", requireAuth, authHandler.ChangePassword)
 	auth.Put("/reset", requireAuth, requireAdmin, authHandler.AdminResetPassword)
-	auth.Put("/put", requireAuth, authHandler.ChangePhoneNumber)
+	auth.Put("/phone", requireAuth, authHandler.ChangePhoneNumber)
 
 	// -------- Public (no auth) --------
 	public := api.Group("/public")
@@ -64,10 +64,10 @@ func Setup(app *fiber.App, cfg *config.Config, pool *pgxpool.Pool) {
 	// -------- Resources --------
 	resources := api.Group("/resources")
 	resources.Get("/", resourceHandler.List)
-	resources.Get("/:id", resourceHandler.Get, requireAuth)
-	resources.Post("/", resourceHandler.Create, requireAuth, requireAdmin)
-	resources.Put("/:id", resourceHandler.Update, requireAuth, requireAdmin)
-	resources.Delete("/:id", resourceHandler.Delete, requireAuth, requireAdmin)
+	resources.Get("/:id", requireAuth, resourceHandler.Get)
+	resources.Post("/", requireAuth, requireAdmin, resourceHandler.Create)
+	resources.Put("/:id", requireAuth, requireAdmin, resourceHandler.Update)
+	resources.Delete("/:id", requireAuth, requireAdmin, resourceHandler.Delete)
 
 	// -------- Bookings --------
 	// Lifecycle: pending -> approved -> in_use -> finished -> closed, with
