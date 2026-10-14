@@ -181,6 +181,58 @@ func (h *AuthHandler) Register(c *fiber.Ctx) error {
 	})
 }
 
+func (h *AuthHandler) RequestAccess(c *fiber.Ctx) error {
+	var req loginRequest
+
+	if err := c.BodyParser(&req); err != nil {
+		return apperror.BadRequest(
+			"INVALID_BODY",
+			"invalid request body",
+		)
+	}
+
+	if strings.TrimSpace(req.Email) == "" ||
+		req.Password == "" {
+
+		return apperror.BadRequest(
+			"VALIDATION_ERROR",
+			"email and password are required",
+		)
+	}
+
+	result, err := h.auth.RequestAccess(
+		c.Context(),
+		req.Email,
+		req.Password,
+	)
+	if err != nil {
+		if ae, ok := err.(*services.AuthError); ok {
+			return apperror.New(
+				ae.StatusCode,
+				ae.Code,
+				ae.Message,
+			)
+		}
+
+		return apperror.Internal(
+			"failed to request SILAPET access",
+		)
+	}
+
+	status := fiber.StatusOK
+	message := "SILAPET access request is already pending"
+
+	if result.Created {
+		status = fiber.StatusCreated
+		message = "SILAPET access request submitted"
+	}
+
+	return c.Status(status).JSON(fiber.Map{
+		"message": message,
+		"user":    result.User,
+	})
+}
+
 func (h *AuthHandler) Me(c *fiber.Ctx) error {
 	userID := middleware.UserIDFromCtx(c)
 	user, err := h.users.GetByID(c.Context(), userID)

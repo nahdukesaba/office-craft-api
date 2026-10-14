@@ -182,6 +182,119 @@ func (r *UserRepository) Upsert(
 	return user, nil
 }
 
+// CreateMembership creates only SILAPET application authorization for an
+// existing central identity. It never creates or updates public.app_users.
+//
+// The bool result is true only when a new membership was inserted. Existing
+// memberships are returned unchanged so retries cannot silently reset role or
+// approval status.
+func (r *UserRepository) CreateMembership(
+	ctx context.Context,
+	userID string,
+	role string,
+	status string,
+) (*models.AppUser, bool, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	defer tx.Rollback(ctx)
+
+	var identityExists bool
+	if err := tx.QueryRow(
+		ctx,
+		`
+			SELECT EXISTS (
+				SELECT 1
+				FROM public.app_users
+				WHERE id = $1
+				  AND deleted_at IS NULL
+			)
+		`,
+		userID,
+	).Scan(&identityExists); err != nil {
+		return nil, false, err
+	}
+
+	if !identityExists {
+		return nil, false, fmt.Errorf(
+			"central identity is unavailable for user %s",
+			userID,
+		)
+	}
+
+	var applicationID string
+	if err := tx.QueryRow(
+		ctx,
+		`
+			SELECT id
+			FROM public.applications
+			WHERE code = $1
+			  AND is_active = TRUE
+		`,
+		models.ApplicationCodeSilapet,
+	).Scan(&applicationID); err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, false, fmt.Errorf(
+				"SILAPET application is not configured",
+			)
+		}
+		return nil, false, err
+	}
+
+	var membershipID string
+	created := true
+
+	err = tx.QueryRow(
+		ctx,
+		`
+			INSERT INTO public.app_memberships (
+				app_user_id,
+				application_id,
+				role,
+				status
+			)
+			VALUES ($1, $2, $3, $4)
+			ON CONFLICT (app_user_id, application_id) DO NOTHING
+			RETURNING id
+		`,
+		userID,
+		applicationID,
+		role,
+		status,
+	).Scan(&membershipID)
+
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			created = false
+		} else {
+			return nil, false, err
+		}
+	}
+
+	user, err := scanUser(
+		tx.QueryRow(
+			ctx,
+			`SELECT `+silapetUserColumns+silapetUserJoin+`
+			 WHERE u.id = $1
+			   AND u.deleted_at IS NULL
+			   AND a.code = $2
+			`,
+			userID,
+			models.ApplicationCodeSilapet,
+		),
+	)
+	if err != nil {
+		return nil, false, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, false, err
+	}
+
+	return user, created, nil
+}
+
 func (r *UserRepository) GetByID(
 	ctx context.Context,
 	id string,

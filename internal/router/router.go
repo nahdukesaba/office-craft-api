@@ -51,6 +51,7 @@ func Setup(app *fiber.App, cfg *config.Config, pool *pgxpool.Pool) {
 	auth := api.Group("/auth")
 	auth.Post("/login", authHandler.Login)
 	auth.Post("/register", authHandler.Register)
+	auth.Post("/request-access", authHandler.RequestAccess)
 	auth.Post("/refresh", authHandler.Refresh)
 	auth.Post("/logout", authHandler.Logout)
 	auth.Get("/me", requireAuth, authHandler.Me)

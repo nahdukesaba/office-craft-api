@@ -27,6 +27,10 @@ type centralSSOSession struct {
 	User         centralSSOUser `json:"user"`
 }
 
+type centralSSORegistration struct {
+	User centralSSOUser `json:"user"`
+}
+
 type centralSSOError struct {
 	Error   string `json:"error"`
 	Message string `json:"message"`
@@ -153,6 +157,18 @@ func mapCentralSSOError(
 
 	case "account_rejected":
 		localCode = "ACCOUNT_REJECTED"
+
+	case "account_already_exists":
+		localCode = "ACCOUNT_ALREADY_EXISTS"
+
+	case "identity_conflict":
+		localCode = "IDENTITY_CONFLICT"
+
+	case "validation_error":
+		localCode = "VALIDATION_ERROR"
+
+	case "invalid_password":
+		localCode = "INVALID_PASSWORD"
 	}
 
 	if localCode == "" {
@@ -168,6 +184,45 @@ func mapCentralSSOError(
 		Code:       localCode,
 		Message:    message,
 	}
+}
+
+func (s *AuthService) centralRegister(
+	ctx context.Context,
+	email string,
+	password string,
+	fullName string,
+	phone string,
+) (*centralSSOUser, error) {
+	var response centralSSORegistration
+
+	err := s.centralSSORequest(
+		ctx,
+		http.MethodPost,
+		"/api/v1/auth/register",
+		map[string]string{
+			"email":    strings.TrimSpace(email),
+			"password": password,
+			"fullName": strings.TrimSpace(fullName),
+			"phone":    strings.TrimSpace(phone),
+		},
+		"",
+		&response,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	if strings.TrimSpace(response.User.ID) == "" ||
+		strings.TrimSpace(response.User.Email) == "" {
+
+		return nil, &AuthError{
+			StatusCode: http.StatusBadGateway,
+			Code:       "INVALID_SSO_RESPONSE",
+			Message:    "central registration returned an invalid identity",
+		}
+	}
+
+	return &response.User, nil
 }
 
 func (s *AuthService) centralLogin(

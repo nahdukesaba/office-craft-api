@@ -279,36 +279,124 @@ func (s *AuthService) authorizeSilapetUser(
 	}
 }
 
-// Register creates a new Supabase Auth user and a matching app_users
-// profile with status "pending". No usable token is ever returned here,
-// regardless of whether Supabase's own email-confirmation is on or off -
-// the account still needs an admin to approve it before anyone can log in.
-// phone is optional (pass "" if not supplied) - it's needed later for
-// WhatsApp notifications but never blocks registration.
-func (s *AuthService) Register(ctx context.Context, email, password, fullName, phone string) (*models.AppUser, error) {
-	resp, err := s.supabaseRequest(ctx, "/signup", map[string]string{
-		"email":    email,
-		"password": password,
-	})
+// Register creates a Central Balai identity through Central SSO, then creates
+// only the SILAPET membership. SILAPET never owns or stores credentials here.
+func (s *AuthService) Register(
+	ctx context.Context,
+	email string,
+	password string,
+	fullName string,
+	phone string,
+) (*models.AppUser, error) {
+	centralUser, err := s.centralRegister(
+		ctx,
+		email,
+		password,
+		fullName,
+		phone,
+	)
 	if err != nil {
 		return nil, err
 	}
 
-	var phonePtr *string
-	if strings.HasPrefix(phone, "0") {
-		phone = "62" + phone[1:]
-	}
-	if phone != "" {
-		phonePtr = &phone
-	}
-
-	user, err := s.users.Upsert(ctx, resp.User.ID, resp.User.Email, fullName, phonePtr, models.RoleUser, models.UserStatusPending)
+	user, created, err := s.users.CreateMembership(
+		ctx,
+		centralUser.ID,
+		models.RoleUser,
+		models.UserStatusPending,
+	)
 	if err != nil {
 		return nil, err
 	}
-	s.fireAdminNotify(*user, "registered", "")
-	go s.notify.NotifyRegistrationReceived(*user)
+
+	if created {
+		s.fireAdminNotify(*user, "registered", "")
+		go s.notify.NotifyRegistrationReceived(*user)
+	}
+
 	return user, nil
+}
+
+type AccessRequestResult struct {
+	User    *models.AppUser
+	Created bool
+}
+
+// RequestAccess verifies an existing Akun Balai through Central SSO and then
+// creates only a pending SILAPET membership.
+//
+// The temporary Central SSO session is discarded because this endpoint proves
+// identity ownership; it is not a SILAPET login.
+func (s *AuthService) RequestAccess(
+	ctx context.Context,
+	email string,
+	password string,
+) (*AccessRequestResult, error) {
+	session, err := s.centralLogin(
+		ctx,
+		strings.TrimSpace(email),
+		password,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	defer s.discardCentralSession(session)
+
+	if session == nil ||
+		strings.TrimSpace(session.User.ID) == "" {
+
+		return nil, &AuthError{
+			StatusCode: http.StatusBadGateway,
+			Code:       "INVALID_SSO_RESPONSE",
+			Message:    "central authentication returned an invalid identity",
+		}
+	}
+
+	user, created, err := s.users.CreateMembership(
+		ctx,
+		session.User.ID,
+		models.RoleUser,
+		models.UserStatusPending,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	if !created {
+		switch user.Status {
+		case models.UserStatusApproved:
+			return nil, &AuthError{
+				StatusCode: http.StatusConflict,
+				Code:       "APPLICATION_ACCESS_EXISTS",
+				Message:    "your account already has access to SILAPET",
+			}
+
+		case models.UserStatusRejected:
+			return nil, &AuthError{
+				StatusCode: http.StatusConflict,
+				Code:       "APPLICATION_ACCESS_REJECTED",
+				Message:    "your previous SILAPET access request was rejected",
+			}
+
+		case models.UserStatusDisabled:
+			return nil, &AuthError{
+				StatusCode: http.StatusConflict,
+				Code:       "APPLICATION_ACCESS_DISABLED",
+				Message:    "your SILAPET access is disabled",
+			}
+		}
+	}
+
+	if created {
+		s.fireAdminNotify(*user, "registered", "")
+		go s.notify.NotifyRegistrationReceived(*user)
+	}
+
+	return &AccessRequestResult{
+		User:    user,
+		Created: created,
+	}, nil
 }
 
 // ChangePassword is the self-service path: verifies oldPassword is correct
