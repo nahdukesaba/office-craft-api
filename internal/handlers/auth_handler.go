@@ -35,8 +35,16 @@ type registerRequest struct {
 }
 
 type authResponse struct {
-	Token string      `json:"token"`
-	User  interface{} `json:"user"`
+	Token        string      `json:"token"`
+	RefreshToken string      `json:"refreshToken,omitempty"`
+	TokenType    string      `json:"tokenType,omitempty"`
+	ExpiresIn    int         `json:"expiresIn,omitempty"`
+	ExpiresAt    int64       `json:"expiresAt,omitempty"`
+	User         interface{} `json:"user"`
+}
+
+type refreshRequest struct {
+	RefreshToken string `json:"refreshToken"`
 }
 
 func (h *AuthHandler) Login(c *fiber.Ctx) error {
@@ -48,7 +56,7 @@ func (h *AuthHandler) Login(c *fiber.Ctx) error {
 		return apperror.BadRequest("VALIDATION_ERROR", "email and password are required")
 	}
 
-	token, user, err := h.auth.Login(c.Context(), req.Email, req.Password)
+	session, err := h.auth.Login(c.Context(), req.Email, req.Password)
 	if err != nil {
 		if ae, ok := err.(*services.AuthError); ok {
 			return apperror.New(ae.StatusCode, ae.Code, ae.Message)
@@ -56,7 +64,96 @@ func (h *AuthHandler) Login(c *fiber.Ctx) error {
 		return apperror.Internal("login failed")
 	}
 
-	return c.JSON(authResponse{Token: token, User: user})
+	return c.JSON(authResponse{
+		Token:        session.AccessToken,
+		RefreshToken: session.RefreshToken,
+		TokenType:    session.TokenType,
+		ExpiresIn:    session.ExpiresIn,
+		ExpiresAt:    session.ExpiresAt,
+		User:         session.User,
+	})
+}
+
+func (h *AuthHandler) Refresh(c *fiber.Ctx) error {
+	var req refreshRequest
+
+	if err := c.BodyParser(&req); err != nil {
+		return apperror.BadRequest(
+			"INVALID_BODY",
+			"invalid request body",
+		)
+	}
+
+	if strings.TrimSpace(req.RefreshToken) == "" {
+		return apperror.BadRequest(
+			"VALIDATION_ERROR",
+			"refreshToken is required",
+		)
+	}
+
+	session, err := h.auth.Refresh(
+		c.Context(),
+		req.RefreshToken,
+	)
+	if err != nil {
+		if ae, ok := err.(*services.AuthError); ok {
+			return apperror.New(
+				ae.StatusCode,
+				ae.Code,
+				ae.Message,
+			)
+		}
+
+		return apperror.Internal("refresh failed")
+	}
+
+	return c.JSON(authResponse{
+		Token:        session.AccessToken,
+		RefreshToken: session.RefreshToken,
+		TokenType:    session.TokenType,
+		ExpiresIn:    session.ExpiresIn,
+		ExpiresAt:    session.ExpiresAt,
+		User:         session.User,
+	})
+}
+
+func (h *AuthHandler) Logout(c *fiber.Ctx) error {
+	header := strings.TrimSpace(c.Get("Authorization"))
+
+	if header == "" {
+		return apperror.New(
+			fiber.StatusUnauthorized,
+			"INVALID_TOKEN",
+			"access token is required",
+		)
+	}
+
+	parts := strings.Fields(header)
+
+	if len(parts) != 2 ||
+		!strings.EqualFold(parts[0], "Bearer") ||
+		strings.TrimSpace(parts[1]) == "" {
+
+		return apperror.New(
+			fiber.StatusUnauthorized,
+			"INVALID_TOKEN",
+			"invalid access token format",
+		)
+	}
+
+	if err := h.auth.Logout(c.Context(), parts[1]); err != nil {
+		if ae, ok := err.(*services.AuthError); ok {
+			return apperror.New(
+				ae.StatusCode,
+				ae.Code,
+				ae.Message,
+			)
+		}
+
+		return apperror.Internal("logout failed")
+	}
+
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
 func (h *AuthHandler) Register(c *fiber.Ctx) error {

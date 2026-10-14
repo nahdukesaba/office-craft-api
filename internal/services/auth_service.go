@@ -102,39 +102,144 @@ type AuthError struct {
 
 func (e *AuthError) Error() string { return e.Message }
 
-// Login authenticates the central identity through Supabase Auth, then
-// enforces SILAPET authorization from app_memberships.
+// Login delegates credential authentication to Central SSO, then resolves
+// SILAPET-specific authorization from app_memberships.
 func (s *AuthService) Login(
 	ctx context.Context,
 	email,
 	password string,
-) (string, *models.AppUser, error) {
-	resp, err := s.supabaseRequest(
+) (*AuthSession, error) {
+	session, err := s.centralLogin(
 		ctx,
-		"/token?grant_type=password",
-		map[string]string{
-			"email":    email,
-			"password": password,
-		},
+		strings.TrimSpace(email),
+		password,
 	)
 	if err != nil {
-		return "", nil, err
+		return nil, err
 	}
 
-	// Authentication only proves the central identity.
-	// SILAPET authorization must already exist as an app_membership.
-	//
-	// Do not auto-create a SILAPET membership here. Otherwise a user from
-	// another application could obtain a pending SILAPET membership merely
-	// by attempting to log in.
-	user, err := s.users.GetByID(ctx, resp.User.ID)
+	result, err := s.buildSilapetSession(ctx, session)
 	if err != nil {
-		return "", nil, err
+		s.discardCentralSession(session)
+		return nil, err
+	}
+
+	return result, nil
+}
+
+// Refresh delegates session rotation to Central SSO and re-checks SILAPET
+// membership before returning the rotated session.
+func (s *AuthService) Refresh(
+	ctx context.Context,
+	refreshToken string,
+) (*AuthSession, error) {
+	refreshToken = strings.TrimSpace(refreshToken)
+
+	if refreshToken == "" {
+		return nil, &AuthError{
+			StatusCode: http.StatusBadRequest,
+			Code:       "VALIDATION_ERROR",
+			Message:    "refreshToken is required",
+		}
+	}
+
+	session, err := s.centralRefresh(ctx, refreshToken)
+	if err != nil {
+		return nil, err
+	}
+
+	result, err := s.buildSilapetSession(ctx, session)
+	if err != nil {
+		s.discardCentralSession(session)
+		return nil, err
+	}
+
+	return result, nil
+}
+
+// Logout delegates session invalidation to Central SSO.
+func (s *AuthService) Logout(
+	ctx context.Context,
+	accessToken string,
+) error {
+	accessToken = strings.TrimSpace(accessToken)
+
+	if accessToken == "" {
+		return &AuthError{
+			StatusCode: http.StatusUnauthorized,
+			Code:       "INVALID_TOKEN",
+			Message:    "access token is required",
+		}
+	}
+
+	return s.centralLogout(ctx, accessToken)
+}
+
+// discardCentralSession best-effort revokes a Central SSO session that
+// SILAPET cannot return to the caller, for example when application
+// membership is unavailable after central authentication succeeded.
+func (s *AuthService) discardCentralSession(
+	session *centralSSOSession,
+) {
+	if session == nil ||
+		strings.TrimSpace(session.AccessToken) == "" {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(
+		context.Background(),
+		3*time.Second,
+	)
+	defer cancel()
+
+	_ = s.centralLogout(ctx, session.AccessToken)
+}
+
+func (s *AuthService) buildSilapetSession(
+	ctx context.Context,
+	session *centralSSOSession,
+) (*AuthSession, error) {
+	if session == nil ||
+		strings.TrimSpace(session.AccessToken) == "" ||
+		strings.TrimSpace(session.User.ID) == "" {
+
+		return nil, &AuthError{
+			StatusCode: http.StatusBadGateway,
+			Code:       "INVALID_SSO_RESPONSE",
+			Message:    "central authentication returned an invalid session",
+		}
+	}
+
+	user, err := s.authorizeSilapetUser(
+		ctx,
+		session.User.ID,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return &AuthSession{
+		AccessToken:  session.AccessToken,
+		RefreshToken: session.RefreshToken,
+		TokenType:    session.TokenType,
+		ExpiresIn:    session.ExpiresIn,
+		ExpiresAt:    session.ExpiresAt,
+		User:         user,
+	}, nil
+}
+
+func (s *AuthService) authorizeSilapetUser(
+	ctx context.Context,
+	userID string,
+) (*models.AppUser, error) {
+	user, err := s.users.GetByID(ctx, userID)
+	if err != nil {
+		return nil, err
 	}
 
 	if user == nil {
-		return "", nil, &AuthError{
-			StatusCode: 403,
+		return nil, &AuthError{
+			StatusCode: http.StatusForbidden,
 			Code:       "APPLICATION_ACCESS_UNAVAILABLE",
 			Message:    "your account does not have access to SILAPET",
 		}
@@ -142,38 +247,36 @@ func (s *AuthService) Login(
 
 	switch user.Status {
 	case models.UserStatusApproved:
-		// Allowed.
+		return user, nil
 
 	case models.UserStatusPending:
-		return "", nil, &AuthError{
-			StatusCode: 403,
+		return nil, &AuthError{
+			StatusCode: http.StatusForbidden,
 			Code:       "ACCOUNT_PENDING_APPROVAL",
 			Message:    "your account is awaiting admin approval",
 		}
 
 	case models.UserStatusRejected:
-		return "", nil, &AuthError{
-			StatusCode: 403,
+		return nil, &AuthError{
+			StatusCode: http.StatusForbidden,
 			Code:       "ACCOUNT_REJECTED",
 			Message:    "your account access request was rejected",
 		}
 
 	case models.UserStatusDisabled:
-		return "", nil, &AuthError{
-			StatusCode: 403,
+		return nil, &AuthError{
+			StatusCode: http.StatusForbidden,
 			Code:       "ACCOUNT_DISABLED",
 			Message:    "your SILAPET access is disabled",
 		}
 
 	default:
-		return "", nil, &AuthError{
-			StatusCode: 403,
+		return nil, &AuthError{
+			StatusCode: http.StatusForbidden,
 			Code:       "APPLICATION_ACCESS_UNAVAILABLE",
 			Message:    "your account does not have active access to SILAPET",
 		}
 	}
-
-	return resp.AccessToken, user, nil
 }
 
 // Register creates a new Supabase Auth user and a matching app_users
