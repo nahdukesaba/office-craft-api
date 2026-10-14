@@ -2,8 +2,13 @@ package models
 
 import "time"
 
-// AppUser mirrors the public.app_users table. JSON tags are camelCase to
-// match the TanStack Start frontend's TypeScript interfaces.
+// AppUser is the SILAPET-facing user representation.
+//
+// Identity/profile fields come from public.app_users.
+// Role and Status come from the user's SILAPET app_membership.
+//
+// The JSON shape intentionally remains unchanged so the existing frontend
+// does not need to change during the authorization migration.
 type AppUser struct {
 	ID        string    `json:"id" db:"id"`
 	Email     string    `json:"email" db:"email"`
@@ -15,16 +20,18 @@ type AppUser struct {
 	UpdatedAt time.Time `json:"updatedAt" db:"updated_at"`
 }
 
+const ApplicationCodeSilapet = "silapet"
+
 const (
 	RoleUser  = "user"
 	RoleAdmin = "admin"
 )
 
-// New registrations start "pending" and need an admin to approve them
-// before they can log in or use any authenticated endpoint. "rejected" is a
-// terminal state an admin can also set.
+// These values now describe the SILAPET membership lifecycle rather than
+// the legacy app_users.status column.
 const (
 	UserStatusPending  = "pending"
 	UserStatusApproved = "approved"
 	UserStatusRejected = "rejected"
+	UserStatusDisabled = "disabled"
 )

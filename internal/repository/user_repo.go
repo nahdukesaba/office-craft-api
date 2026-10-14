@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -17,63 +18,237 @@ func NewUserRepository(pool *pgxpool.Pool) *UserRepository {
 	return &UserRepository{pool: pool}
 }
 
-const userColumns = `id, email, full_name, phone, role, status, created_at, updated_at`
+const silapetUserColumns = `
+	u.id,
+	u.email,
+	u.full_name,
+	u.phone,
+	m.role,
+	m.status,
+	u.created_at,
+	u.updated_at
+`
+
+const silapetUserJoin = `
+	FROM public.app_users u
+	JOIN public.app_memberships m
+		ON m.app_user_id = u.id
+		AND m.deleted_at IS NULL
+	JOIN public.applications a
+		ON a.id = m.application_id
+		AND a.is_active = TRUE
+`
 
 func scanUser(row pgx.Row) (*models.AppUser, error) {
 	var u models.AppUser
-	if err := row.Scan(&u.ID, &u.Email, &u.FullName, &u.Phone, &u.Role, &u.Status, &u.CreatedAt, &u.UpdatedAt); err != nil {
+
+	if err := row.Scan(
+		&u.ID,
+		&u.Email,
+		&u.FullName,
+		&u.Phone,
+		&u.Role,
+		&u.Status,
+		&u.CreatedAt,
+		&u.UpdatedAt,
+	); err != nil {
 		return nil, err
 	}
+
 	return &u, nil
 }
 
-// Upsert creates or updates the profile row for a Supabase auth user, used
-// right after register/login to keep app_users in sync. `status` is only
-// applied on first insert (via INSERT ... status) - it is intentionally NOT
-// overwritten on conflict, so re-logging-in never silently resets an
-// admin's approve/reject decision back to its original value. `phone` may
-// be nil (not supplied at registration); once set, it's likewise preserved
-// across future upserts rather than getting blanked out.
-func (r *UserRepository) Upsert(ctx context.Context, id, email, fullName string, phone *string, role, status string) (*models.AppUser, error) {
-	row := r.pool.QueryRow(ctx, `
-		INSERT INTO public.app_users (id, email, full_name, phone, role, status)
-		VALUES ($1, $2, $3, $4, $5, $6)
-		ON CONFLICT (id) DO UPDATE
-		SET email = EXCLUDED.email,
-		    full_name = CASE WHEN public.app_users.full_name = '' THEN EXCLUDED.full_name ELSE public.app_users.full_name END,
-		    phone = CASE WHEN public.app_users.phone IS NULL THEN EXCLUDED.phone ELSE public.app_users.phone END
-		RETURNING `+userColumns, id, email, fullName, phone, role, status)
+// Upsert creates/updates the central identity profile and ensures a SILAPET
+// membership exists.
+//
+// role/status are only used when the SILAPET membership is first created.
+// Existing membership authorization is never overwritten by login/register
+// upserts.
+//
+// app_users.role/status are still populated on INSERT for compatibility with
+// the legacy schema, but they are no longer the SILAPET authorization source.
+func (r *UserRepository) Upsert(
+	ctx context.Context,
+	id, email, fullName string,
+	phone *string,
+	role, status string,
+) (*models.AppUser, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
 
-	return scanUser(row)
+	var applicationID string
+	if err := tx.QueryRow(
+		ctx,
+		`
+			SELECT id
+			FROM public.applications
+			WHERE code = $1
+			  AND is_active = TRUE
+		`,
+		models.ApplicationCodeSilapet,
+	).Scan(&applicationID); err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, fmt.Errorf("SILAPET application is not configured")
+		}
+		return nil, err
+	}
+
+	_, err = tx.Exec(
+		ctx,
+		`
+			INSERT INTO public.app_users (
+				id,
+				email,
+				full_name,
+				phone,
+				role,
+				status
+			)
+			VALUES ($1, $2, $3, $4, $5, $6)
+			ON CONFLICT (id) DO UPDATE
+			SET email = EXCLUDED.email,
+			    full_name = CASE
+			        WHEN public.app_users.full_name = ''
+			        THEN EXCLUDED.full_name
+			        ELSE public.app_users.full_name
+			    END,
+			    phone = CASE
+			        WHEN public.app_users.phone IS NULL
+			        THEN EXCLUDED.phone
+			        ELSE public.app_users.phone
+			    END
+		`,
+		id,
+		email,
+		fullName,
+		phone,
+		role,
+		status,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	_, err = tx.Exec(
+		ctx,
+		`
+			INSERT INTO public.app_memberships (
+				app_user_id,
+				application_id,
+				role,
+				status
+			)
+			VALUES ($1, $2, $3, $4)
+			ON CONFLICT (app_user_id, application_id) DO NOTHING
+		`,
+		id,
+		applicationID,
+		role,
+		status,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	user, err := scanUser(
+		tx.QueryRow(
+			ctx,
+			`SELECT `+silapetUserColumns+silapetUserJoin+`
+			 WHERE u.id = $1
+			   AND u.deleted_at IS NULL
+			   AND a.code = $2
+			`,
+			id,
+			models.ApplicationCodeSilapet,
+		),
+	)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, fmt.Errorf(
+				"SILAPET membership is unavailable for user %s",
+				id,
+			)
+		}
+		return nil, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+
+	return user, nil
 }
 
-func (r *UserRepository) GetByID(ctx context.Context, id string) (*models.AppUser, error) {
-	row := r.pool.QueryRow(ctx, `SELECT `+userColumns+` FROM public.app_users WHERE id = $1 AND deleted_at IS NULL`, id)
-	u, err := scanUser(row)
+func (r *UserRepository) GetByID(
+	ctx context.Context,
+	id string,
+) (*models.AppUser, error) {
+	user, err := scanUser(
+		r.pool.QueryRow(
+			ctx,
+			`SELECT `+silapetUserColumns+silapetUserJoin+`
+			 WHERE u.id = $1
+			   AND u.deleted_at IS NULL
+			   AND a.code = $2
+			`,
+			id,
+			models.ApplicationCodeSilapet,
+		),
+	)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, nil
 		}
 		return nil, err
 	}
-	return u, nil
+
+	return user, nil
 }
 
 func (r *UserRepository) Count(ctx context.Context) (int64, error) {
 	var count int64
-	err := r.pool.QueryRow(ctx, `SELECT COUNT(*) FROM public.app_users WHERE deleted_at IS NULL`).Scan(&count)
+
+	err := r.pool.QueryRow(
+		ctx,
+		`
+			SELECT COUNT(*)
+			FROM public.app_users u
+			JOIN public.app_memberships m
+				ON m.app_user_id = u.id
+				AND m.deleted_at IS NULL
+			JOIN public.applications a
+				ON a.id = m.application_id
+				AND a.is_active = TRUE
+			WHERE u.deleted_at IS NULL
+			  AND a.code = $1
+		`,
+		models.ApplicationCodeSilapet,
+	).Scan(&count)
+
 	return count, err
 }
 
-// List returns users, optionally filtered by status ("" means no filter).
-func (r *UserRepository) List(ctx context.Context, status string) ([]models.AppUser, error) {
-	query := `SELECT ` + userColumns + ` FROM public.app_users WHERE deleted_at IS NULL`
-	args := []interface{}{}
+// List returns SILAPET members, optionally filtered by membership status.
+func (r *UserRepository) List(
+	ctx context.Context,
+	status string,
+) ([]models.AppUser, error) {
+	query := `SELECT ` + silapetUserColumns + silapetUserJoin + `
+		WHERE u.deleted_at IS NULL
+		  AND a.code = $1
+	`
+
+	args := []interface{}{models.ApplicationCodeSilapet}
+
 	if status != "" {
-		query += ` AND status = $1`
+		query += ` AND m.status = $2`
 		args = append(args, status)
 	}
-	query += ` ORDER BY created_at DESC`
+
+	query += ` ORDER BY u.created_at DESC`
 
 	rows, err := r.pool.Query(ctx, query, args...)
 	if err != nil {
@@ -82,6 +257,7 @@ func (r *UserRepository) List(ctx context.Context, status string) ([]models.AppU
 	defer rows.Close()
 
 	var out []models.AppUser
+
 	for rows.Next() {
 		u, err := scanUser(rows)
 		if err != nil {
@@ -89,74 +265,105 @@ func (r *UserRepository) List(ctx context.Context, status string) ([]models.AppU
 		}
 		out = append(out, *u)
 	}
+
 	return out, rows.Err()
 }
 
-// UpdateStatus is used by the admin approve/reject endpoints.
-func (r *UserRepository) UpdateStatus(ctx context.Context, id, status string) (*models.AppUser, error) {
-	row := r.pool.QueryRow(ctx, `
-		UPDATE public.app_users SET status = $1 WHERE id = $2 AND deleted_at IS NULL
-		RETURNING `+userColumns, status, id)
-	u, err := scanUser(row)
+// UpdateStatus changes only the SILAPET membership status.
+// app_users.status is intentionally left untouched.
+func (r *UserRepository) UpdateStatus(
+	ctx context.Context,
+	id, status string,
+) (*models.AppUser, error) {
+	tag, err := r.pool.Exec(
+		ctx,
+		`
+			UPDATE public.app_memberships m
+			SET status = $1,
+			    updated_at = now()
+			FROM public.applications a
+			WHERE m.application_id = a.id
+			  AND a.code = $2
+			  AND a.is_active = TRUE
+			  AND m.app_user_id = $3
+			  AND m.deleted_at IS NULL
+		`,
+		status,
+		models.ApplicationCodeSilapet,
+		id,
+	)
 	if err != nil {
-		if err == pgx.ErrNoRows {
-			return nil, nil
-		}
 		return nil, err
 	}
-	return u, nil
+
+	if tag.RowsAffected() == 0 {
+		return nil, nil
+	}
+
+	return r.GetByID(ctx, id)
 }
 
-// ListAdmins returns every active (approved, not deleted) admin - used to
-// fan out the "new booking request / started / finished" notifications to
-// whoever should review them.
-func (r *UserRepository) ListAdmins(ctx context.Context) ([]models.AppUser, error) {
-	rows, err := r.pool.Query(ctx, `
-		SELECT `+userColumns+`
-		FROM public.app_users
-		WHERE deleted_at IS NULL AND role = 'admin' AND status = 'approved'
-		ORDER BY created_at ASC
-	`)
+// ListAdmins returns approved SILAPET administrators.
+// Role/status are sourced from app_memberships.
+func (r *UserRepository) ListAdmins(
+	ctx context.Context,
+) ([]models.AppUser, error) {
+	rows, err := r.pool.Query(
+		ctx,
+		`SELECT `+silapetUserColumns+silapetUserJoin+`
+		 WHERE u.deleted_at IS NULL
+		   AND a.code = $1
+		   AND m.role = $2
+		   AND m.status = $3
+		 ORDER BY u.created_at ASC
+		`,
+		models.ApplicationCodeSilapet,
+		models.RoleAdmin,
+		models.UserStatusApproved,
+	)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
 	var out []models.AppUser
+
 	for rows.Next() {
 		u, err := scanUser(rows)
 		if err != nil {
 			return nil, err
 		}
+
 		out = append(out, *u)
 	}
+
 	return out, rows.Err()
 }
 
-// UpdatePhone lets a user set/change their own WhatsApp number. No route
-// wires this up yet (out of scope for the notify feature itself) - it's
-// here so adding a "my profile" endpoint later is a one-handler change.
-func (r *UserRepository) UpdatePhone(ctx context.Context, id, phone string) (*models.AppUser, error) {
-	row := r.pool.QueryRow(ctx, `
-		UPDATE public.app_users SET phone = $1 WHERE id = $2 AND deleted_at IS NULL
-		RETURNING `+userColumns, phone, id)
-	u, err := scanUser(row)
+// UpdatePhone changes the central profile field, then returns the SILAPET
+// projection so role/status still come from app_memberships.
+func (r *UserRepository) UpdatePhone(
+	ctx context.Context,
+	id, phone string,
+) (*models.AppUser, error) {
+	tag, err := r.pool.Exec(
+		ctx,
+		`
+			UPDATE public.app_users
+			SET phone = $1
+			WHERE id = $2
+			  AND deleted_at IS NULL
+		`,
+		phone,
+		id,
+	)
 	if err != nil {
-		if err == pgx.ErrNoRows {
-			return nil, nil
-		}
 		return nil, err
 	}
-	return u, nil
-}
 
-// SoftDelete marks a user as deleted without removing the row. No route
-// currently calls this (there's no "delete user" endpoint yet), but it's
-// here so the repository is ready if/when one is added.
-func (r *UserRepository) SoftDelete(ctx context.Context, id string) (bool, error) {
-	tag, err := r.pool.Exec(ctx, `UPDATE public.app_users SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL`, id)
-	if err != nil {
-		return false, err
+	if tag.RowsAffected() == 0 {
+		return nil, nil
 	}
-	return tag.RowsAffected() > 0, nil
+
+	return r.GetByID(ctx, id)
 }

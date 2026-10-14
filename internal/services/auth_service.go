@@ -102,36 +102,75 @@ type AuthError struct {
 
 func (e *AuthError) Error() string { return e.Message }
 
-// Login authenticates against Supabase Auth's password grant, then enforces
-// the admin-approval gate: only "approved" accounts get a usable token back.
-func (s *AuthService) Login(ctx context.Context, email, password string) (string, *models.AppUser, error) {
-	resp, err := s.supabaseRequest(ctx, "/token?grant_type=password", map[string]string{
-		"email":    email,
-		"password": password,
-	})
+// Login authenticates the central identity through Supabase Auth, then
+// enforces SILAPET authorization from app_memberships.
+func (s *AuthService) Login(
+	ctx context.Context,
+	email,
+	password string,
+) (string, *models.AppUser, error) {
+	resp, err := s.supabaseRequest(
+		ctx,
+		"/token?grant_type=password",
+		map[string]string{
+			"email":    email,
+			"password": password,
+		},
+	)
 	if err != nil {
 		return "", nil, err
 	}
 
+	// Authentication only proves the central identity.
+	// SILAPET authorization must already exist as an app_membership.
+	//
+	// Do not auto-create a SILAPET membership here. Otherwise a user from
+	// another application could obtain a pending SILAPET membership merely
+	// by attempting to log in.
 	user, err := s.users.GetByID(ctx, resp.User.ID)
 	if err != nil {
 		return "", nil, err
 	}
+
 	if user == nil {
-		// Profile row missing (e.g. user created directly in Supabase
-		// dashboard, bypassing our /auth/register) -> backfill as pending,
-		// same gate as any other new account.
-		user, err = s.users.Upsert(ctx, resp.User.ID, resp.User.Email, "", nil, models.RoleUser, models.UserStatusPending)
-		if err != nil {
-			return "", nil, err
+		return "", nil, &AuthError{
+			StatusCode: 403,
+			Code:       "APPLICATION_ACCESS_UNAVAILABLE",
+			Message:    "your account does not have access to SILAPET",
 		}
 	}
 
 	switch user.Status {
+	case models.UserStatusApproved:
+		// Allowed.
+
 	case models.UserStatusPending:
-		return "", nil, &AuthError{StatusCode: 403, Code: "ACCOUNT_PENDING_APPROVAL", Message: "your account is awaiting admin approval"}
+		return "", nil, &AuthError{
+			StatusCode: 403,
+			Code:       "ACCOUNT_PENDING_APPROVAL",
+			Message:    "your account is awaiting admin approval",
+		}
+
 	case models.UserStatusRejected:
-		return "", nil, &AuthError{StatusCode: 403, Code: "ACCOUNT_REJECTED", Message: "your account access request was rejected"}
+		return "", nil, &AuthError{
+			StatusCode: 403,
+			Code:       "ACCOUNT_REJECTED",
+			Message:    "your account access request was rejected",
+		}
+
+	case models.UserStatusDisabled:
+		return "", nil, &AuthError{
+			StatusCode: 403,
+			Code:       "ACCOUNT_DISABLED",
+			Message:    "your SILAPET access is disabled",
+		}
+
+	default:
+		return "", nil, &AuthError{
+			StatusCode: 403,
+			Code:       "APPLICATION_ACCESS_UNAVAILABLE",
+			Message:    "your account does not have active access to SILAPET",
+		}
 	}
 
 	return resp.AccessToken, user, nil

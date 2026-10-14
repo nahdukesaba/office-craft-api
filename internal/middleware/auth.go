@@ -9,6 +9,7 @@ import (
 	"github.com/MicahParks/keyfunc/v3"
 	"github.com/gofiber/fiber/v2"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"office-craft-api/internal/apperror"
@@ -106,42 +107,111 @@ func (v *TokenVerifier) Parse(ctx context.Context, tokenStr string) (*supabaseCl
 	return claims, nil
 }
 
-// RequireAuth validates the Authorization: Bearer <token> header, then loads
-// the matching app_users row (for our own app-level role + approval status)
-// into fiber locals. Accounts that aren't "approved" are rejected here too,
-// not just at login - this covers tokens issued before an admin reviewed the
-// account, and accounts an admin later revokes.
+// RequireAuth validates the Supabase access token and resolves SILAPET
+// authorization from app_memberships.
+//
+// The token proves central identity. SILAPET membership determines whether
+// that identity may use this application and which role it has.
 func RequireAuth(verifier *TokenVerifier, pool *pgxpool.Pool) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		authHeader := c.Get("Authorization")
 		if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
-			return apperror.Unauthorized("missing or malformed Authorization header")
+			return apperror.Unauthorized(
+				"missing or malformed Authorization header",
+			)
 		}
+
 		tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
 
 		claims, err := verifier.Parse(c.Context(), tokenStr)
 		if err != nil || claims.Sub == "" {
-			return apperror.Unauthorized("invalid or expired token")
+			return apperror.Unauthorized(
+				"invalid or expired token",
+			)
 		}
 
 		var user models.AppUser
-		row := pool.QueryRow(context.Background(),
-			`SELECT id, email, full_name, role, status, created_at, updated_at
-			 FROM public.app_users WHERE id = $1`, claims.Sub)
-		if err := row.Scan(&user.ID, &user.Email, &user.FullName, &user.Role, &user.Status, &user.CreatedAt, &user.UpdatedAt); err != nil {
-			return apperror.Unauthorized("user profile not found")
+
+		row := pool.QueryRow(
+			c.Context(),
+			`
+				SELECT
+					u.id,
+					u.email,
+					u.full_name,
+					m.role,
+					m.status,
+					u.created_at,
+					u.updated_at
+				FROM public.app_users u
+				JOIN public.app_memberships m
+					ON m.app_user_id = u.id
+					AND m.deleted_at IS NULL
+				JOIN public.applications a
+					ON a.id = m.application_id
+					AND a.is_active = TRUE
+				WHERE u.id = $1
+				  AND u.deleted_at IS NULL
+				  AND a.code = $2
+			`,
+			claims.Sub,
+			models.ApplicationCodeSilapet,
+		)
+
+		if err := row.Scan(
+			&user.ID,
+			&user.Email,
+			&user.FullName,
+			&user.Role,
+			&user.Status,
+			&user.CreatedAt,
+			&user.UpdatedAt,
+		); err != nil {
+			if err == pgx.ErrNoRows {
+				return apperror.Forbidden(
+					"APPLICATION_ACCESS_UNAVAILABLE",
+					"your account does not have access to SILAPET",
+				)
+			}
+
+			return apperror.Internal(
+				"failed to resolve SILAPET access",
+			)
 		}
 
 		switch user.Status {
+		case models.UserStatusApproved:
+			// Allowed.
+
 		case models.UserStatusPending:
-			return apperror.Forbidden("ACCOUNT_PENDING_APPROVAL", "your account is awaiting admin approval")
+			return apperror.Forbidden(
+				"ACCOUNT_PENDING_APPROVAL",
+				"your account is awaiting admin approval",
+			)
+
 		case models.UserStatusRejected:
-			return apperror.Forbidden("ACCOUNT_REJECTED", "your account access request was rejected")
+			return apperror.Forbidden(
+				"ACCOUNT_REJECTED",
+				"your account access request was rejected",
+			)
+
+		case models.UserStatusDisabled:
+			return apperror.Forbidden(
+				"ACCOUNT_DISABLED",
+				"your SILAPET access is disabled",
+			)
+
+		default:
+			return apperror.Forbidden(
+				"APPLICATION_ACCESS_UNAVAILABLE",
+				"your account does not have active access to SILAPET",
+			)
 		}
 
 		c.Locals(LocalsUserID, user.ID)
 		c.Locals(LocalsEmail, user.Email)
 		c.Locals(LocalsRole, user.Role)
+
 		return c.Next()
 	}
 }
