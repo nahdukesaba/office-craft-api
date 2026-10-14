@@ -169,6 +169,15 @@ func mapCentralSSOError(
 
 	case "invalid_password":
 		localCode = "INVALID_PASSWORD"
+
+	case "same_password":
+		localCode = "SAME_PASSWORD"
+
+	case "invalid_recovery_token":
+		localCode = "INVALID_RECOVERY_TOKEN"
+
+	case "unsupported_application":
+		localCode = "UNSUPPORTED_APPLICATION"
 	}
 
 	if localCode == "" {
@@ -283,6 +292,59 @@ func (s *AuthService) centralLogout(
 		"/api/v1/auth/logout",
 		nil,
 		accessToken,
+		nil,
+	)
+}
+
+func (s *AuthService) centralChangePassword(
+	ctx context.Context,
+	accessToken string,
+	oldPassword string,
+	newPassword string,
+) error {
+	return s.centralSSORequest(
+		ctx,
+		http.MethodPut,
+		"/api/v1/auth/password",
+		map[string]string{
+			"oldPassword": oldPassword,
+			"newPassword": newPassword,
+		},
+		accessToken,
+		nil,
+	)
+}
+
+func (s *AuthService) centralForgotPassword(
+	ctx context.Context,
+	email string,
+) error {
+	return s.centralSSORequest(
+		ctx,
+		http.MethodPost,
+		"/api/v1/auth/forgot-password",
+		map[string]string{
+			"email":       strings.TrimSpace(email),
+			"application": models.ApplicationCodeSilapet,
+		},
+		"",
+		nil,
+	)
+}
+
+func (s *AuthService) centralResetPassword(
+	ctx context.Context,
+	recoveryToken string,
+	newPassword string,
+) error {
+	return s.centralSSORequest(
+		ctx,
+		http.MethodPost,
+		"/api/v1/auth/reset-password",
+		map[string]string{
+			"password": newPassword,
+		},
+		recoveryToken,
 		nil,
 	)
 }

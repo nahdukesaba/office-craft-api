@@ -27,7 +27,7 @@ func Setup(app *fiber.App, cfg *config.Config, pool *pgxpool.Pool) {
 	proofSvc := services.NewProofService(bookingRepo)
 	reportSvc := services.NewReportService(bookingRepo, resourceRepo, userRepo)
 
-	authHandler := handlers.NewAuthHandler(authSvc, userRepo, emailSvc)
+	authHandler := handlers.NewAuthHandler(authSvc, userRepo)
 	resourceHandler := handlers.NewResourceHandler(resourceRepo)
 	bookingHandler := handlers.NewBookingHandler(bookingRepo, resourceRepo, userRepo, proofRepo, eventRepo, bookingSvc)
 	proofHandler := handlers.NewProofHandler(proofRepo, bookingRepo, proofSvc)
@@ -52,11 +52,12 @@ func Setup(app *fiber.App, cfg *config.Config, pool *pgxpool.Pool) {
 	auth.Post("/login", authHandler.Login)
 	auth.Post("/register", authHandler.Register)
 	auth.Post("/request-access", authHandler.RequestAccess)
+	auth.Post("/forgot-password", authHandler.ForgotPassword)
+	auth.Post("/reset-password", authHandler.ResetPassword)
 	auth.Post("/refresh", authHandler.Refresh)
 	auth.Post("/logout", authHandler.Logout)
 	auth.Get("/me", requireAuth, authHandler.Me)
 	auth.Put("/password", requireAuth, authHandler.ChangePassword)
-	auth.Put("/reset", requireAuth, requireAdmin, authHandler.AdminResetPassword)
 	auth.Put("/phone", requireAuth, authHandler.ChangePhoneNumber)
 
 	// -------- Public (no auth) --------
