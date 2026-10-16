@@ -259,7 +259,8 @@ type forgotPasswordRequest struct {
 }
 
 type resetPasswordRequest struct {
-	Password string `json:"password"`
+	TokenHash string `json:"tokenHash"`
+	Password  string `json:"password"`
 }
 
 func (h *AuthHandler) ChangePassword(c *fiber.Ctx) error {
@@ -370,26 +371,22 @@ func (h *AuthHandler) ForgotPassword(c *fiber.Ctx) error {
 }
 
 func (h *AuthHandler) ResetPassword(c *fiber.Ctx) error {
-	header := strings.TrimSpace(c.Get("Authorization"))
-	parts := strings.Fields(header)
-
-	if len(parts) != 2 ||
-		!strings.EqualFold(parts[0], "Bearer") ||
-		strings.TrimSpace(parts[1]) == "" {
-
-		return apperror.New(
-			fiber.StatusUnauthorized,
-			"INVALID_RECOVERY_TOKEN",
-			"recovery access token is required",
-		)
-	}
-
 	var req resetPasswordRequest
 
 	if err := c.BodyParser(&req); err != nil {
 		return apperror.BadRequest(
 			"INVALID_BODY",
 			"invalid request body",
+		)
+	}
+
+	req.TokenHash = strings.TrimSpace(req.TokenHash)
+
+	if req.TokenHash == "" {
+		return apperror.New(
+			fiber.StatusUnauthorized,
+			"INVALID_RECOVERY_TOKEN",
+			"recovery token hash is required",
 		)
 	}
 
@@ -404,7 +401,7 @@ func (h *AuthHandler) ResetPassword(c *fiber.Ctx) error {
 
 	if err := h.auth.ResetPassword(
 		c.Context(),
-		parts[1],
+		req.TokenHash,
 		req.Password,
 	); err != nil {
 		if ae, ok := err.(*services.AuthError); ok {

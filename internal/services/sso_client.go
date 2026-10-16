@@ -334,7 +334,7 @@ func (s *AuthService) centralForgotPassword(
 
 func (s *AuthService) centralResetPassword(
 	ctx context.Context,
-	recoveryToken string,
+	tokenHash string,
 	newPassword string,
 ) error {
 	return s.centralSSORequest(
@@ -342,9 +342,10 @@ func (s *AuthService) centralResetPassword(
 		http.MethodPost,
 		"/api/v1/auth/reset-password",
 		map[string]string{
-			"password": newPassword,
+			"tokenHash": tokenHash,
+			"password":  newPassword,
 		},
-		recoveryToken,
+		"",
 		nil,
 	)
 }

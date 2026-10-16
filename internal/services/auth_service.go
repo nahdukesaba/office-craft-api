@@ -362,15 +362,15 @@ func (s *AuthService) ForgotPassword(
 	)
 }
 
-// ResetPassword delegates the recovery-token password update to Central SSO.
+// ResetPassword delegates recovery verification and password update to Central SSO.
 func (s *AuthService) ResetPassword(
 	ctx context.Context,
-	recoveryToken string,
+	tokenHash string,
 	newPassword string,
 ) error {
 	return s.centralResetPassword(
 		ctx,
-		recoveryToken,
+		tokenHash,
 		newPassword,
 	)
 }
