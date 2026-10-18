@@ -246,8 +246,9 @@ func (s *AuthService) centralLogin(
 		http.MethodPost,
 		"/api/v1/auth/login",
 		map[string]string{
-			"email":    email,
-			"password": password,
+			"email":       email,
+			"password":    password,
+			"application": models.ApplicationCodeSilapet,
 		},
 		"",
 		&session,
