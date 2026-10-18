@@ -107,12 +107,16 @@ func (v *TokenVerifier) Parse(ctx context.Context, tokenStr string) (*supabaseCl
 	return claims, nil
 }
 
-// RequireAuth validates the Supabase access token and resolves SILAPET
-// authorization from app_memberships.
+// RequireAuth preserves existing Supabase sessions first. If the token is not
+// a valid Supabase token, authentication falls back to Central SSO.
 //
-// The token proves central identity. SILAPET membership determines whether
-// that identity may use this application and which role it has.
-func RequireAuth(verifier *TokenVerifier, pool *pgxpool.Pool) fiber.Handler {
+// Central SSO validates the self-hosted access token and resolves the SILAPET
+// application membership.
+func RequireAuth(
+	verifier *TokenVerifier,
+	pool *pgxpool.Pool,
+	ssoBaseURL string,
+) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		authHeader := c.Get("Authorization")
 		if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
@@ -125,8 +129,11 @@ func RequireAuth(verifier *TokenVerifier, pool *pgxpool.Pool) fiber.Handler {
 
 		claims, err := verifier.Parse(c.Context(), tokenStr)
 		if err != nil || claims.Sub == "" {
-			return apperror.Unauthorized(
-				"invalid or expired token",
+			return requireCentralSSOAuth(
+				c,
+				pool,
+				ssoBaseURL,
+				tokenStr,
 			)
 		}
 
