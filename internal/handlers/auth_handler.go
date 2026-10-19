@@ -157,6 +157,7 @@ func (h *AuthHandler) Logout(c *fiber.Ctx) error {
 		return apperror.Internal("logout failed")
 	}
 
+	middleware.InvalidateCentralSSOAuthCache()
 	return c.SendStatus(fiber.StatusNoContent)
 }
 
@@ -324,6 +325,7 @@ func (h *AuthHandler) ChangePassword(c *fiber.Ctx) error {
 		)
 	}
 
+	middleware.InvalidateCentralSSOAuthCache()
 	return c.JSON(
 		fiber.Map{"message": "password updated"},
 	)
@@ -417,6 +419,7 @@ func (h *AuthHandler) ResetPassword(c *fiber.Ctx) error {
 		)
 	}
 
+	middleware.InvalidateCentralSSOAuthCache()
 	return c.SendStatus(fiber.StatusNoContent)
 }
 

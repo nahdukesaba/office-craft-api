@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"log"
 	"sort"
 	"strconv"
 	"time"
@@ -72,12 +73,68 @@ func (h *BookingHandler) List(c *fiber.Ctx) error {
 
 	items, total, err := h.bookings.List(c.Context(), filter)
 	if err != nil {
+		log.Printf("bookings.List: %v", err)
 		return apperror.Internal("failed to list bookings")
+	}
+
+	resourceCache := make(map[string]*models.Resource)
+	userCache := make(map[string]*models.AppUser)
+
+	if len(items) > 0 {
+		resIDSet := make(map[string]struct{})
+		usrIDSet := make(map[string]struct{})
+		for _, b := range items {
+			if b.ResourceID != "" {
+				resIDSet[b.ResourceID] = struct{}{}
+			}
+			if b.UserID != "" {
+				usrIDSet[b.UserID] = struct{}{}
+			}
+		}
+		if len(resIDSet) > 0 {
+			resIDs := make([]string, 0, len(resIDSet))
+			for id := range resIDSet {
+				resIDs = append(resIDs, id)
+			}
+			if batchRes, err := h.resources.GetByIDs(c.Context(), resIDs); err == nil {
+				for id, r := range batchRes {
+					resourceCache[id] = r
+				}
+			}
+		}
+		if len(usrIDSet) > 0 {
+			usrIDs := make([]string, 0, len(usrIDSet))
+			for id := range usrIDSet {
+				usrIDs = append(usrIDs, id)
+			}
+			if batchUsr, err := h.users.GetByIDs(c.Context(), usrIDs); err == nil {
+				for id, u := range batchUsr {
+					userCache[id] = u
+				}
+			}
+		}
 	}
 
 	enriched := make([]models.BookingWithDetails, 0, len(items))
 	for _, b := range items {
-		enriched = append(enriched, h.enrich(c.Context(), b))
+		out := models.BookingWithDetails{Booking: b}
+		if b.ResourceID != "" {
+			if res, ok := resourceCache[b.ResourceID]; ok {
+				out.Resource = res
+			} else if res, err := h.resources.GetByID(c.Context(), b.ResourceID); err == nil {
+				resourceCache[b.ResourceID] = res
+				out.Resource = res
+			}
+		}
+		if b.UserID != "" {
+			if usr, ok := userCache[b.UserID]; ok {
+				out.User = usr
+			} else if usr, err := h.users.GetByID(c.Context(), b.UserID); err == nil {
+				userCache[b.UserID] = usr
+				out.User = usr
+			}
+		}
+		enriched = append(enriched, out)
 	}
 
 	pageSize := filter.PageSize
@@ -314,9 +371,31 @@ func (h *BookingHandler) History(c *fiber.Ctx) error {
 		return apperror.Internal("failed to load booking proofs")
 	}
 
-	// Cache actor/uploader lookups so a booking with many events from the
-	// same one or two people doesn't hit the DB once per entry.
+	// Pre-populate actor/uploader cache in a single batch query so a booking
+	// with multiple actors doesn't hit the DB sequentially per actor.
 	actorCache := map[string]*models.AppUser{}
+	actorIDSet := map[string]struct{}{}
+	for _, e := range events {
+		if e.ActorID != nil && *e.ActorID != "" {
+			actorIDSet[*e.ActorID] = struct{}{}
+		}
+	}
+	for _, p := range proofs {
+		if p.UploadedBy != "" {
+			actorIDSet[p.UploadedBy] = struct{}{}
+		}
+	}
+	if len(actorIDSet) > 0 {
+		actorIDs := make([]string, 0, len(actorIDSet))
+		for id := range actorIDSet {
+			actorIDs = append(actorIDs, id)
+		}
+		if batchActors, err := h.users.GetByIDs(c.Context(), actorIDs); err == nil {
+			for id, u := range batchActors {
+				actorCache[id] = u
+			}
+		}
+	}
 	loadActor := func(id string) *models.AppUser {
 		if id == "" {
 			return nil

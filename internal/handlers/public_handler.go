@@ -56,11 +56,7 @@ func (h *PublicHandler) AllBookings(c *fiber.Ctx) error {
 	if err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "failed to list bookings")
 	}
-	detailItems := make([]models.BookingWithDetails, 0, len(items))
-	for _, item := range items {
-		detailItems = append(detailItems, h.enrich(c.Context(), item))
-	}
-	return c.JSON(detailItems)
+	return c.JSON(h.enrichMany(c.Context(), items, nil))
 }
 
 func (h *PublicHandler) BookingsForResource(c *fiber.Ctx) error {
@@ -79,11 +75,79 @@ func (h *PublicHandler) BookingsForResource(c *fiber.Ctx) error {
 	if err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "failed to list bookings")
 	}
+	return c.JSON(h.enrichMany(c.Context(), items, res))
+}
+
+func (h *PublicHandler) enrichMany(ctx context.Context, items []models.Booking, preloadedResource *models.Resource) []models.BookingWithDetails {
 	detailItems := make([]models.BookingWithDetails, 0, len(items))
-	for _, item := range items {
-		detailItems = append(detailItems, h.enrich(c.Context(), item))
+	if len(items) == 0 {
+		return detailItems
 	}
-	return c.JSON(detailItems)
+
+	resourceCache := make(map[string]*models.Resource)
+	if preloadedResource != nil && preloadedResource.ID != "" {
+		resourceCache[preloadedResource.ID] = preloadedResource
+	}
+
+	resourceIDSet := make(map[string]struct{})
+	userIDSet := make(map[string]struct{})
+	for _, b := range items {
+		if b.ResourceID != "" {
+			if _, ok := resourceCache[b.ResourceID]; !ok {
+				resourceIDSet[b.ResourceID] = struct{}{}
+			}
+		}
+		if b.UserID != "" {
+			userIDSet[b.UserID] = struct{}{}
+		}
+	}
+
+	if len(resourceIDSet) > 0 {
+		resIDs := make([]string, 0, len(resourceIDSet))
+		for id := range resourceIDSet {
+			resIDs = append(resIDs, id)
+		}
+		if batchRes, err := h.resources.GetByIDs(ctx, resIDs); err == nil {
+			for id, r := range batchRes {
+				resourceCache[id] = r
+			}
+		}
+	}
+
+	userCache := make(map[string]*models.AppUser)
+	if len(userIDSet) > 0 {
+		usrIDs := make([]string, 0, len(userIDSet))
+		for id := range userIDSet {
+			usrIDs = append(usrIDs, id)
+		}
+		if batchUsr, err := h.users.GetByIDs(ctx, usrIDs); err == nil {
+			for id, u := range batchUsr {
+				userCache[id] = u
+			}
+		}
+	}
+
+	for _, b := range items {
+		out := models.BookingWithDetails{Booking: b}
+		if b.ResourceID != "" {
+			if res, ok := resourceCache[b.ResourceID]; ok {
+				out.Resource = res
+			} else if res, err := h.resources.GetByID(ctx, b.ResourceID); err == nil {
+				resourceCache[b.ResourceID] = res
+				out.Resource = res
+			}
+		}
+		if b.UserID != "" {
+			if usr, ok := userCache[b.UserID]; ok {
+				out.User = usr
+			} else if usr, err := h.users.GetByID(ctx, b.UserID); err == nil {
+				userCache[b.UserID] = usr
+				out.User = usr
+			}
+		}
+		detailItems = append(detailItems, out)
+	}
+	return detailItems
 }
 
 func (h *PublicHandler) enrich(ctx context.Context, b models.Booking) models.BookingWithDetails {

@@ -5,15 +5,18 @@ import (
 
 	"office-craft-api/internal/apperror"
 	"office-craft-api/internal/models"
-	"office-craft-api/internal/repository"
 	"office-craft-api/internal/utils"
 )
 
-type ProofService struct {
-	bookings *repository.BookingRepository
+type proofBookingFinder interface {
+	GetByID(ctx context.Context, id string) (*models.Booking, error)
 }
 
-func NewProofService(bookings *repository.BookingRepository) *ProofService {
+type ProofService struct {
+	bookings proofBookingFinder
+}
+
+func NewProofService(bookings proofBookingFinder) *ProofService {
 	return &ProofService{bookings: bookings}
 }
 

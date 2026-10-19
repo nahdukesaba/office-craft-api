@@ -31,6 +31,7 @@ func Setup(app *fiber.App, cfg *config.Config, pool *pgxpool.Pool) {
 	resourceHandler := handlers.NewResourceHandler(resourceRepo)
 	bookingHandler := handlers.NewBookingHandler(bookingRepo, resourceRepo, userRepo, proofRepo, eventRepo, bookingSvc)
 	proofHandler := handlers.NewProofHandler(proofRepo, bookingRepo, proofSvc)
+	storageHandler := handlers.NewStorageHandler(cfg, bookingRepo, proofRepo, proofSvc)
 	notifyHandler := handlers.NewNotifyHandler(notifySvc, bookingRepo)
 	publicHandler := handlers.NewPublicHandler(bookingRepo, resourceRepo, userRepo)
 	statsHandler := handlers.NewStatsHandler(bookingRepo, resourceRepo, userRepo)
@@ -68,6 +69,7 @@ func Setup(app *fiber.App, cfg *config.Config, pool *pgxpool.Pool) {
 	resources := api.Group("/resources")
 	resources.Get("/", resourceHandler.List)
 	resources.Get("/:id", requireAuth, resourceHandler.Get)
+	resources.Post("/photos/upload", requireAuth, requireAdmin, storageHandler.UploadResourcePhoto)
 	resources.Post("/", requireAuth, requireAdmin, resourceHandler.Create)
 	resources.Put("/:id", requireAuth, requireAdmin, resourceHandler.Update)
 	resources.Delete("/:id", requireAuth, requireAdmin, resourceHandler.Delete)
@@ -93,6 +95,8 @@ func Setup(app *fiber.App, cfg *config.Config, pool *pgxpool.Pool) {
 	// -------- Proofs (nested under bookings, still requires auth) --------
 	bookings.Get("/:bookingId/proofs", proofHandler.List)
 	bookings.Post("/:bookingId/proofs", proofHandler.Create)
+	bookings.Post("/:bookingId/proofs/upload", storageHandler.UploadProof)
+	bookings.Get("/:bookingId/proofs/signed", storageHandler.ListProofsSigned)
 
 	// -------- Stats --------
 	stats := api.Group("/stats", requireAuth, requireAdmin)

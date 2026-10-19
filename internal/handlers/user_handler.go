@@ -4,6 +4,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 
 	"office-craft-api/internal/apperror"
+	"office-craft-api/internal/middleware"
 	"office-craft-api/internal/models"
 	"office-craft-api/internal/repository"
 	"office-craft-api/internal/services"
@@ -71,6 +72,7 @@ func (h *UserHandler) setStatus(c *fiber.Ctx, status string) error {
 	if user == nil {
 		return apperror.NotFound("USER_NOT_FOUND", "user not found")
 	}
+	middleware.InvalidateCentralSSOAuthCache()
 	h.notify.NotifyUser(c.Context(), *user, status)
 	return c.JSON(user)
 }

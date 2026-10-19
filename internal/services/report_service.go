@@ -42,6 +42,44 @@ func (s *ReportService) loadEnrichedRows(ctx context.Context, from, to time.Time
 	resourceCache := map[string]*models.Resource{}
 	userCache := map[string]*models.AppUser{}
 
+	if len(bookings) > 0 {
+		resIDSet := make(map[string]struct{})
+		usrIDSet := make(map[string]struct{})
+		for _, b := range bookings {
+			if statusFilter != "" && b.Status != statusFilter {
+				continue
+			}
+			if b.ResourceID != "" {
+				resIDSet[b.ResourceID] = struct{}{}
+			}
+			if b.UserID != "" {
+				usrIDSet[b.UserID] = struct{}{}
+			}
+		}
+		if len(resIDSet) > 0 {
+			resIDs := make([]string, 0, len(resIDSet))
+			for id := range resIDSet {
+				resIDs = append(resIDs, id)
+			}
+			if batchRes, err := s.resources.GetByIDs(ctx, resIDs); err == nil {
+				for id, r := range batchRes {
+					resourceCache[id] = r
+				}
+			}
+		}
+		if len(usrIDSet) > 0 {
+			usrIDs := make([]string, 0, len(usrIDSet))
+			for id := range usrIDSet {
+				usrIDs = append(usrIDs, id)
+			}
+			if batchUsr, err := s.users.GetByIDs(ctx, usrIDs); err == nil {
+				for id, u := range batchUsr {
+					userCache[id] = u
+				}
+			}
+		}
+	}
+
 	rows := make([]enrichedRow, 0, len(bookings))
 	for _, b := range bookings {
 		if statusFilter != "" && b.Status != statusFilter {

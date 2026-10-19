@@ -321,6 +321,41 @@ func (r *UserRepository) GetByID(
 	return user, nil
 }
 
+func (r *UserRepository) GetByIDs(
+	ctx context.Context,
+	ids []string,
+) (map[string]*models.AppUser, error) {
+	out := make(map[string]*models.AppUser, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+
+	rows, err := r.pool.Query(
+		ctx,
+		`SELECT `+silapetUserColumns+silapetUserJoin+`
+		 WHERE u.id = ANY($1::uuid[])
+		   AND u.deleted_at IS NULL
+		   AND a.code = $2
+		`,
+		ids,
+		models.ApplicationCodeSilapet,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		u, err := scanUser(rows)
+		if err != nil {
+			return nil, err
+		}
+		out[u.ID] = u
+	}
+
+	return out, rows.Err()
+}
+
 func (r *UserRepository) Count(ctx context.Context) (int64, error) {
 	var count int64
 
