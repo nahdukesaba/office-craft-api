@@ -37,8 +37,7 @@ func Setup(app *fiber.App, cfg *config.Config, pool *pgxpool.Pool) {
 	userHandler := handlers.NewUserHandler(userRepo, notifySvc)
 	reportHandler := handlers.NewReportHandler(reportSvc)
 
-	verifier := middleware.NewTokenVerifier(cfg.SupabaseJWTSecret, cfg.SupabaseURL)
-	requireAuth := middleware.RequireAuth(verifier, pool, cfg.SSOBaseURL)
+	requireAuth := middleware.RequireAuth(pool, cfg.SSOBaseURL)
 	requireAdmin := middleware.RequireAdmin()
 
 	api := app.Group("/api")

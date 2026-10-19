@@ -9,11 +9,9 @@ import (
 	"github.com/MicahParks/keyfunc/v3"
 	"github.com/gofiber/fiber/v2"
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"office-craft-api/internal/apperror"
-	"office-craft-api/internal/models"
 )
 
 const (
@@ -107,119 +105,38 @@ func (v *TokenVerifier) Parse(ctx context.Context, tokenStr string) (*supabaseCl
 	return claims, nil
 }
 
-// RequireAuth preserves existing Supabase sessions first. If the token is not
-// a valid Supabase token, authentication falls back to Central SSO.
-//
-// Central SSO validates the self-hosted access token and resolves the SILAPET
-// application membership.
+// RequireAuth delegates protected API authentication to Central SSO.
+// Central SSO validates the token, session, and SILAPET membership.
 func RequireAuth(
-	verifier *TokenVerifier,
 	pool *pgxpool.Pool,
 	ssoBaseURL string,
 ) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		authHeader := c.Get("Authorization")
-		if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
+
+		if authHeader == "" ||
+			!strings.HasPrefix(authHeader, "Bearer ") {
 			return apperror.Unauthorized(
 				"missing or malformed Authorization header",
 			)
 		}
 
-		tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
-
-		claims, err := verifier.Parse(c.Context(), tokenStr)
-		if err != nil || claims.Sub == "" {
-			return requireCentralSSOAuth(
-				c,
-				pool,
-				ssoBaseURL,
-				tokenStr,
-			)
-		}
-
-		var user models.AppUser
-
-		row := pool.QueryRow(
-			c.Context(),
-			`
-				SELECT
-					u.id,
-					u.email,
-					u.full_name,
-					m.role,
-					m.status,
-					u.created_at,
-					u.updated_at
-				FROM public.app_users u
-				JOIN public.app_memberships m
-					ON m.app_user_id = u.id
-					AND m.deleted_at IS NULL
-				JOIN public.applications a
-					ON a.id = m.application_id
-					AND a.is_active = TRUE
-				WHERE u.id = $1
-				  AND u.deleted_at IS NULL
-				  AND a.code = $2
-			`,
-			claims.Sub,
-			models.ApplicationCodeSilapet,
+		tokenStr := strings.TrimSpace(
+			strings.TrimPrefix(authHeader, "Bearer "),
 		)
 
-		if err := row.Scan(
-			&user.ID,
-			&user.Email,
-			&user.FullName,
-			&user.Role,
-			&user.Status,
-			&user.CreatedAt,
-			&user.UpdatedAt,
-		); err != nil {
-			if err == pgx.ErrNoRows {
-				return apperror.Forbidden(
-					"APPLICATION_ACCESS_UNAVAILABLE",
-					"your account does not have access to SILAPET",
-				)
-			}
-
-			return apperror.Internal(
-				"failed to resolve SILAPET access",
+		if tokenStr == "" {
+			return apperror.Unauthorized(
+				"missing or malformed Authorization header",
 			)
 		}
 
-		switch user.Status {
-		case models.UserStatusApproved:
-			// Allowed.
-
-		case models.UserStatusPending:
-			return apperror.Forbidden(
-				"ACCOUNT_PENDING_APPROVAL",
-				"your account is awaiting admin approval",
-			)
-
-		case models.UserStatusRejected:
-			return apperror.Forbidden(
-				"ACCOUNT_REJECTED",
-				"your account access request was rejected",
-			)
-
-		case models.UserStatusDisabled:
-			return apperror.Forbidden(
-				"ACCOUNT_DISABLED",
-				"your SILAPET access is disabled",
-			)
-
-		default:
-			return apperror.Forbidden(
-				"APPLICATION_ACCESS_UNAVAILABLE",
-				"your account does not have active access to SILAPET",
-			)
-		}
-
-		c.Locals(LocalsUserID, user.ID)
-		c.Locals(LocalsEmail, user.Email)
-		c.Locals(LocalsRole, user.Role)
-
-		return c.Next()
+		return requireCentralSSOAuth(
+			c,
+			pool,
+			ssoBaseURL,
+			tokenStr,
+		)
 	}
 }
 
