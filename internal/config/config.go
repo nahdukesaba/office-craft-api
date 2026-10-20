@@ -17,6 +17,7 @@ type Config struct {
 	SupabaseAnonKey                string
 	SupabaseServiceKey             string
 	SupabaseJWTSecret              string
+	SSOBaseURL                     string
 	SupabaseStorageBucketResources string
 	SupabaseStorageBucketProofs    string
 	SeedAdminEmail                 string
@@ -56,6 +57,7 @@ func Load() *Config {
 		SupabaseAnonKey:                getEnv("SUPABASE_ANON_KEY", ""),
 		SupabaseServiceKey:             getEnv("SUPABASE_SERVICE_ROLE_KEY", ""),
 		SupabaseJWTSecret:              getEnv("SUPABASE_JWT_SECRET", ""),
+		SSOBaseURL:                     getEnv("SSO_BASE_URL", "http://127.0.0.1:8082"),
 		SupabaseStorageBucketResources: getEnv("SUPABASE_STORAGE_BUCKET_RESOURCES", "resource-photos"),
 		SupabaseStorageBucketProofs:    getEnv("SUPABASE_STORAGE_BUCKET_PROOFS", "booking-proofs"),
 		SeedAdminEmail:                 getEnv("SEED_ADMIN_EMAIL", "admin@office-craft.local"),
@@ -83,6 +85,9 @@ func Load() *Config {
 	}
 	if cfg.SupabaseJWTSecret == "" {
 		log.Fatal("SUPABASE_JWT_SECRET is required to validate access tokens")
+	}
+	if cfg.SupabaseServiceKey == "" {
+		log.Println("SUPABASE_SERVICE_ROLE_KEY not set: server-side Supabase Storage uploads and signed URLs will be unavailable")
 	}
 	if cfg.SMTPHost == "" {
 		log.Println("SMTP_HOST not set: email notifications will be logged only, not actually sent")

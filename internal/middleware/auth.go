@@ -12,7 +12,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"office-craft-api/internal/apperror"
-	"office-craft-api/internal/models"
 )
 
 const (
@@ -106,43 +105,38 @@ func (v *TokenVerifier) Parse(ctx context.Context, tokenStr string) (*supabaseCl
 	return claims, nil
 }
 
-// RequireAuth validates the Authorization: Bearer <token> header, then loads
-// the matching app_users row (for our own app-level role + approval status)
-// into fiber locals. Accounts that aren't "approved" are rejected here too,
-// not just at login - this covers tokens issued before an admin reviewed the
-// account, and accounts an admin later revokes.
-func RequireAuth(verifier *TokenVerifier, pool *pgxpool.Pool) fiber.Handler {
+// RequireAuth delegates protected API authentication to Central SSO.
+// Central SSO validates the token, session, and SILAPET membership.
+func RequireAuth(
+	pool *pgxpool.Pool,
+	ssoBaseURL string,
+) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		authHeader := c.Get("Authorization")
-		if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
-			return apperror.Unauthorized("missing or malformed Authorization header")
-		}
-		tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
 
-		claims, err := verifier.Parse(c.Context(), tokenStr)
-		if err != nil || claims.Sub == "" {
-			return apperror.Unauthorized("invalid or expired token")
+		if authHeader == "" ||
+			!strings.HasPrefix(authHeader, "Bearer ") {
+			return apperror.Unauthorized(
+				"missing or malformed Authorization header",
+			)
 		}
 
-		var user models.AppUser
-		row := pool.QueryRow(context.Background(),
-			`SELECT id, email, full_name, role, status, created_at, updated_at
-			 FROM public.app_users WHERE id = $1`, claims.Sub)
-		if err := row.Scan(&user.ID, &user.Email, &user.FullName, &user.Role, &user.Status, &user.CreatedAt, &user.UpdatedAt); err != nil {
-			return apperror.Unauthorized("user profile not found")
+		tokenStr := strings.TrimSpace(
+			strings.TrimPrefix(authHeader, "Bearer "),
+		)
+
+		if tokenStr == "" {
+			return apperror.Unauthorized(
+				"missing or malformed Authorization header",
+			)
 		}
 
-		switch user.Status {
-		case models.UserStatusPending:
-			return apperror.Forbidden("ACCOUNT_PENDING_APPROVAL", "your account is awaiting admin approval")
-		case models.UserStatusRejected:
-			return apperror.Forbidden("ACCOUNT_REJECTED", "your account access request was rejected")
-		}
-
-		c.Locals(LocalsUserID, user.ID)
-		c.Locals(LocalsEmail, user.Email)
-		c.Locals(LocalsRole, user.Role)
-		return c.Next()
+		return requireCentralSSOAuth(
+			c,
+			pool,
+			ssoBaseURL,
+			tokenStr,
+		)
 	}
 }
 

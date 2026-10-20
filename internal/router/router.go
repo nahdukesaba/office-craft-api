@@ -27,18 +27,18 @@ func Setup(app *fiber.App, cfg *config.Config, pool *pgxpool.Pool) {
 	proofSvc := services.NewProofService(bookingRepo)
 	reportSvc := services.NewReportService(bookingRepo, resourceRepo, userRepo)
 
-	authHandler := handlers.NewAuthHandler(authSvc, userRepo, emailSvc)
+	authHandler := handlers.NewAuthHandler(authSvc, userRepo)
 	resourceHandler := handlers.NewResourceHandler(resourceRepo)
 	bookingHandler := handlers.NewBookingHandler(bookingRepo, resourceRepo, userRepo, proofRepo, eventRepo, bookingSvc)
 	proofHandler := handlers.NewProofHandler(proofRepo, bookingRepo, proofSvc)
+	storageHandler := handlers.NewStorageHandler(cfg, bookingRepo, proofRepo, proofSvc)
 	notifyHandler := handlers.NewNotifyHandler(notifySvc, bookingRepo)
 	publicHandler := handlers.NewPublicHandler(bookingRepo, resourceRepo, userRepo)
 	statsHandler := handlers.NewStatsHandler(bookingRepo, resourceRepo, userRepo)
 	userHandler := handlers.NewUserHandler(userRepo, notifySvc)
 	reportHandler := handlers.NewReportHandler(reportSvc)
 
-	verifier := middleware.NewTokenVerifier(cfg.SupabaseJWTSecret, cfg.SupabaseURL)
-	requireAuth := middleware.RequireAuth(verifier, pool)
+	requireAuth := middleware.RequireAuth(pool, cfg.SSOBaseURL)
 	requireAdmin := middleware.RequireAdmin()
 
 	api := app.Group("/api")
@@ -51,9 +51,13 @@ func Setup(app *fiber.App, cfg *config.Config, pool *pgxpool.Pool) {
 	auth := api.Group("/auth")
 	auth.Post("/login", authHandler.Login)
 	auth.Post("/register", authHandler.Register)
+	auth.Post("/request-access", authHandler.RequestAccess)
+	auth.Post("/forgot-password", authHandler.ForgotPassword)
+	auth.Post("/reset-password", authHandler.ResetPassword)
+	auth.Post("/refresh", authHandler.Refresh)
+	auth.Post("/logout", authHandler.Logout)
 	auth.Get("/me", requireAuth, authHandler.Me)
 	auth.Put("/password", requireAuth, authHandler.ChangePassword)
-	auth.Put("/reset", requireAuth, requireAdmin, authHandler.AdminResetPassword)
 	auth.Put("/phone", requireAuth, authHandler.ChangePhoneNumber)
 
 	// -------- Public (no auth) --------
@@ -65,6 +69,7 @@ func Setup(app *fiber.App, cfg *config.Config, pool *pgxpool.Pool) {
 	resources := api.Group("/resources")
 	resources.Get("/", resourceHandler.List)
 	resources.Get("/:id", requireAuth, resourceHandler.Get)
+	resources.Post("/photos/upload", requireAuth, requireAdmin, storageHandler.UploadResourcePhoto)
 	resources.Post("/", requireAuth, requireAdmin, resourceHandler.Create)
 	resources.Put("/:id", requireAuth, requireAdmin, resourceHandler.Update)
 	resources.Delete("/:id", requireAuth, requireAdmin, resourceHandler.Delete)
@@ -90,6 +95,8 @@ func Setup(app *fiber.App, cfg *config.Config, pool *pgxpool.Pool) {
 	// -------- Proofs (nested under bookings, still requires auth) --------
 	bookings.Get("/:bookingId/proofs", proofHandler.List)
 	bookings.Post("/:bookingId/proofs", proofHandler.Create)
+	bookings.Post("/:bookingId/proofs/upload", storageHandler.UploadProof)
+	bookings.Get("/:bookingId/proofs/signed", storageHandler.ListProofsSigned)
 
 	// -------- Stats --------
 	stats := api.Group("/stats", requireAuth, requireAdmin)

@@ -44,6 +44,7 @@ func main() {
 
 	app := fiber.New(fiber.Config{
 		AppName:      "Office-Craft API",
+		BodyLimit:    11 * 1024 * 1024,
 		ErrorHandler: errorHandler,
 	})
 

@@ -21,7 +21,7 @@ func Connect(cfg *config.Config) (*pgxpool.Pool, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parsing database url: %w", err)
 	}
-	poolCfg.MaxConns = 10
+	poolCfg.MaxConns = 4
 
 	// Supabase's connection pooler (pgbouncer) does not reliably support the
 	// extended query protocol / prepared statement caching that pgx uses by

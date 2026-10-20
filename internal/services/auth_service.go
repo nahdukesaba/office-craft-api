@@ -1,13 +1,7 @@
 package services
 
 import (
-	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/json"
-	"fmt"
-	"io"
-	"math/big"
 	"net/http"
 	"strings"
 	"time"
@@ -33,65 +27,6 @@ func NewAuthService(cfg *config.Config, users *repository.UserRepository, notify
 	}
 }
 
-type supabaseAuthResponse struct {
-	AccessToken string `json:"access_token"`
-	User        struct {
-		ID    string `json:"id"`
-		Email string `json:"email"`
-	} `json:"user"`
-}
-
-type supabaseErrorResponse struct {
-	Msg       string `json:"msg"`
-	ErrorCode string `json:"error_code"`
-	ErrorDesc string `json:"error_description"`
-}
-
-func (s *AuthService) supabaseRequest(ctx context.Context, path string, body interface{}) (*supabaseAuthResponse, error) {
-	payload, err := json.Marshal(body)
-	if err != nil {
-		return nil, err
-	}
-
-	url := fmt.Sprintf("%s/auth/v1%s", s.cfg.SupabaseURL, path)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("apikey", s.cfg.SupabaseAnonKey)
-
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	if resp.StatusCode >= 400 {
-		var e supabaseErrorResponse
-		_ = json.Unmarshal(raw, &e)
-		msg := e.Msg
-		if msg == "" {
-			msg = e.ErrorDesc
-		}
-		if msg == "" {
-			msg = "authentication request failed"
-		}
-		return nil, &AuthError{StatusCode: resp.StatusCode, Code: "AUTH_ERROR", Message: msg}
-	}
-
-	var out supabaseAuthResponse
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
 // AuthError carries the HTTP status + a stable code so handlers can relay a
 // consistent { error, message } body.
 type AuthError struct {
@@ -102,174 +37,342 @@ type AuthError struct {
 
 func (e *AuthError) Error() string { return e.Message }
 
-// Login authenticates against Supabase Auth's password grant, then enforces
-// the admin-approval gate: only "approved" accounts get a usable token back.
-func (s *AuthService) Login(ctx context.Context, email, password string) (string, *models.AppUser, error) {
-	resp, err := s.supabaseRequest(ctx, "/token?grant_type=password", map[string]string{
-		"email":    email,
-		"password": password,
-	})
+// Login delegates credential authentication to Central SSO, then resolves
+// SILAPET-specific authorization from app_memberships.
+func (s *AuthService) Login(
+	ctx context.Context,
+	email,
+	password string,
+) (*AuthSession, error) {
+	session, err := s.centralLogin(
+		ctx,
+		strings.TrimSpace(email),
+		password,
+	)
 	if err != nil {
-		return "", nil, err
+		return nil, err
 	}
 
-	user, err := s.users.GetByID(ctx, resp.User.ID)
+	result, err := s.buildSilapetSession(ctx, session)
 	if err != nil {
-		return "", nil, err
+		s.discardCentralSession(session)
+		return nil, err
 	}
+
+	return result, nil
+}
+
+// Refresh delegates session rotation to Central SSO and re-checks SILAPET
+// membership before returning the rotated session.
+func (s *AuthService) Refresh(
+	ctx context.Context,
+	refreshToken string,
+) (*AuthSession, error) {
+	refreshToken = strings.TrimSpace(refreshToken)
+
+	if refreshToken == "" {
+		return nil, &AuthError{
+			StatusCode: http.StatusBadRequest,
+			Code:       "VALIDATION_ERROR",
+			Message:    "refreshToken is required",
+		}
+	}
+
+	session, err := s.centralRefresh(ctx, refreshToken)
+	if err != nil {
+		return nil, err
+	}
+
+	result, err := s.buildSilapetSession(ctx, session)
+	if err != nil {
+		s.discardCentralSession(session)
+		return nil, err
+	}
+
+	return result, nil
+}
+
+// Logout delegates session invalidation to Central SSO.
+func (s *AuthService) Logout(
+	ctx context.Context,
+	accessToken string,
+) error {
+	accessToken = strings.TrimSpace(accessToken)
+
+	if accessToken == "" {
+		return &AuthError{
+			StatusCode: http.StatusUnauthorized,
+			Code:       "INVALID_TOKEN",
+			Message:    "access token is required",
+		}
+	}
+
+	return s.centralLogout(ctx, accessToken)
+}
+
+// discardCentralSession best-effort revokes a Central SSO session that
+// SILAPET cannot return to the caller, for example when application
+// membership is unavailable after central authentication succeeded.
+func (s *AuthService) discardCentralSession(
+	session *centralSSOSession,
+) {
+	if session == nil ||
+		strings.TrimSpace(session.AccessToken) == "" {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(
+		context.Background(),
+		3*time.Second,
+	)
+	defer cancel()
+
+	_ = s.centralLogout(ctx, session.AccessToken)
+}
+
+func (s *AuthService) buildSilapetSession(
+	ctx context.Context,
+	session *centralSSOSession,
+) (*AuthSession, error) {
+	if session == nil ||
+		strings.TrimSpace(session.AccessToken) == "" ||
+		strings.TrimSpace(session.User.ID) == "" {
+
+		return nil, &AuthError{
+			StatusCode: http.StatusBadGateway,
+			Code:       "INVALID_SSO_RESPONSE",
+			Message:    "central authentication returned an invalid session",
+		}
+	}
+
+	user, err := s.authorizeSilapetUser(
+		ctx,
+		session.User.ID,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return &AuthSession{
+		AccessToken:  session.AccessToken,
+		RefreshToken: session.RefreshToken,
+		TokenType:    session.TokenType,
+		ExpiresIn:    session.ExpiresIn,
+		ExpiresAt:    session.ExpiresAt,
+		User:         user,
+	}, nil
+}
+
+func (s *AuthService) authorizeSilapetUser(
+	ctx context.Context,
+	userID string,
+) (*models.AppUser, error) {
+	user, err := s.users.GetByID(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+
 	if user == nil {
-		// Profile row missing (e.g. user created directly in Supabase
-		// dashboard, bypassing our /auth/register) -> backfill as pending,
-		// same gate as any other new account.
-		user, err = s.users.Upsert(ctx, resp.User.ID, resp.User.Email, "", nil, models.RoleUser, models.UserStatusPending)
-		if err != nil {
-			return "", nil, err
+		return nil, &AuthError{
+			StatusCode: http.StatusForbidden,
+			Code:       "APPLICATION_ACCESS_UNAVAILABLE",
+			Message:    "your account does not have access to SILAPET",
 		}
 	}
 
 	switch user.Status {
-	case models.UserStatusPending:
-		return "", nil, &AuthError{StatusCode: 403, Code: "ACCOUNT_PENDING_APPROVAL", Message: "your account is awaiting admin approval"}
-	case models.UserStatusRejected:
-		return "", nil, &AuthError{StatusCode: 403, Code: "ACCOUNT_REJECTED", Message: "your account access request was rejected"}
-	}
+	case models.UserStatusApproved:
+		return user, nil
 
-	return resp.AccessToken, user, nil
+	case models.UserStatusPending:
+		return nil, &AuthError{
+			StatusCode: http.StatusForbidden,
+			Code:       "ACCOUNT_PENDING_APPROVAL",
+			Message:    "your account is awaiting admin approval",
+		}
+
+	case models.UserStatusRejected:
+		return nil, &AuthError{
+			StatusCode: http.StatusForbidden,
+			Code:       "ACCOUNT_REJECTED",
+			Message:    "your account access request was rejected",
+		}
+
+	case models.UserStatusDisabled:
+		return nil, &AuthError{
+			StatusCode: http.StatusForbidden,
+			Code:       "ACCOUNT_DISABLED",
+			Message:    "your SILAPET access is disabled",
+		}
+
+	default:
+		return nil, &AuthError{
+			StatusCode: http.StatusForbidden,
+			Code:       "APPLICATION_ACCESS_UNAVAILABLE",
+			Message:    "your account does not have active access to SILAPET",
+		}
+	}
 }
 
-// Register creates a new Supabase Auth user and a matching app_users
-// profile with status "pending". No usable token is ever returned here,
-// regardless of whether Supabase's own email-confirmation is on or off -
-// the account still needs an admin to approve it before anyone can log in.
-// phone is optional (pass "" if not supplied) - it's needed later for
-// WhatsApp notifications but never blocks registration.
-func (s *AuthService) Register(ctx context.Context, email, password, fullName, phone string) (*models.AppUser, error) {
-	resp, err := s.supabaseRequest(ctx, "/signup", map[string]string{
-		"email":    email,
-		"password": password,
-	})
+// Register creates a Central Balai identity through Central SSO, then creates
+// only the SILAPET membership. SILAPET never owns or stores credentials here.
+func (s *AuthService) Register(
+	ctx context.Context,
+	email string,
+	password string,
+	fullName string,
+	phone string,
+) (*models.AppUser, error) {
+	centralUser, err := s.centralRegister(
+		ctx,
+		email,
+		password,
+		fullName,
+		phone,
+	)
 	if err != nil {
 		return nil, err
 	}
 
-	var phonePtr *string
-	if strings.HasPrefix(phone, "0") {
-		phone = "62" + phone[1:]
-	}
-	if phone != "" {
-		phonePtr = &phone
-	}
-
-	user, err := s.users.Upsert(ctx, resp.User.ID, resp.User.Email, fullName, phonePtr, models.RoleUser, models.UserStatusPending)
+	user, created, err := s.users.CreateMembership(
+		ctx,
+		centralUser.ID,
+		models.RoleUser,
+		models.UserStatusPending,
+	)
 	if err != nil {
 		return nil, err
 	}
-	s.fireAdminNotify(*user, "registered", "")
-	go s.notify.NotifyRegistrationReceived(*user)
+
+	if created {
+		s.fireAdminNotify(*user, "registered", "")
+		go s.notify.NotifyRegistrationReceived(*user)
+	}
+
 	return user, nil
 }
 
-// ChangePassword is the self-service path: verifies oldPassword is correct
-// (by attempting a login grant with it) before updating to newPassword
-// using the caller's own access token. No service role key involved - this
-// only ever acts on the authenticated caller's own account.
-func (s *AuthService) ChangePassword(ctx context.Context, accessToken, email, oldPassword, newPassword string) error {
-	if _, err := s.supabaseRequest(ctx, "/token?grant_type=password", map[string]string{
-		"email":    email,
-		"password": oldPassword,
-	}); err != nil {
-		return &AuthError{StatusCode: 401, Code: "INVALID_PASSWORD", Message: "current password is incorrect"}
-	}
-
-	payload, err := json.Marshal(map[string]string{"password": newPassword})
-	if err != nil {
-		return err
-	}
-	url := fmt.Sprintf("%s/auth/v1/user", s.cfg.SupabaseURL)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, bytes.NewReader(payload))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("apikey", s.cfg.SupabaseAnonKey)
-	req.Header.Set("Authorization", "Bearer "+accessToken)
-
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return err
-	}
-	if resp.StatusCode >= 400 {
-		var e supabaseErrorResponse
-		_ = json.Unmarshal(raw, &e)
-		msg := e.Msg
-		if msg == "" {
-			msg = e.ErrorDesc
-		}
-		if msg == "" {
-			msg = "failed to update password"
-		}
-		return &AuthError{StatusCode: resp.StatusCode, Code: "PASSWORD_UPDATE_FAILED", Message: msg}
-	}
-	return nil
+type AccessRequestResult struct {
+	User    *models.AppUser
+	Created bool
 }
 
-// AdminResetPassword generates a random temporary password for userID and
-// sets it directly via the Supabase Admin API (requires
-// SUPABASE_SERVICE_ROLE_KEY). Returns the generated password so the caller
-// can relay it to the user - the handler also best-effort emails it.
-func (s *AuthService) AdminResetPassword(ctx context.Context, userID string) (string, error) {
-	if s.cfg.SupabaseServiceKey == "" {
-		return "", fmt.Errorf("SUPABASE_SERVICE_ROLE_KEY is not configured - admin password reset is unavailable")
+// RequestAccess verifies an existing Akun Balai through Central SSO and then
+// creates only a pending SILAPET membership.
+//
+// The temporary Central SSO session is discarded because this endpoint proves
+// identity ownership; it is not a SILAPET login.
+func (s *AuthService) RequestAccess(
+	ctx context.Context,
+	email string,
+	password string,
+) (*AccessRequestResult, error) {
+	session, err := s.centralLogin(
+		ctx,
+		strings.TrimSpace(email),
+		password,
+	)
+	if err != nil {
+		return nil, err
 	}
 
-	newPassword, err := generateTempPassword()
-	if err != nil {
-		return "", err
-	}
+	defer s.discardCentralSession(session)
 
-	payload, err := json.Marshal(map[string]string{"password": newPassword})
-	if err != nil {
-		return "", err
-	}
-	url := fmt.Sprintf("%s/auth/v1/admin/users/%s", s.cfg.SupabaseURL, userID)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, bytes.NewReader(payload))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("apikey", s.cfg.SupabaseServiceKey)
-	req.Header.Set("Authorization", "Bearer "+s.cfg.SupabaseServiceKey)
+	if session == nil ||
+		strings.TrimSpace(session.User.ID) == "" {
 
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-	if resp.StatusCode >= 400 {
-		var e supabaseErrorResponse
-		_ = json.Unmarshal(raw, &e)
-		msg := e.Msg
-		if msg == "" {
-			msg = e.ErrorDesc
+		return nil, &AuthError{
+			StatusCode: http.StatusBadGateway,
+			Code:       "INVALID_SSO_RESPONSE",
+			Message:    "central authentication returned an invalid identity",
 		}
-		if msg == "" {
-			msg = "failed to reset password"
-		}
-		return "", &AuthError{StatusCode: resp.StatusCode, Code: "PASSWORD_RESET_FAILED", Message: msg}
 	}
 
-	return newPassword, nil
+	user, created, err := s.users.CreateMembership(
+		ctx,
+		session.User.ID,
+		models.RoleUser,
+		models.UserStatusPending,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	if !created {
+		switch user.Status {
+		case models.UserStatusApproved:
+			return nil, &AuthError{
+				StatusCode: http.StatusConflict,
+				Code:       "APPLICATION_ACCESS_EXISTS",
+				Message:    "your account already has access to SILAPET",
+			}
+
+		case models.UserStatusRejected:
+			return nil, &AuthError{
+				StatusCode: http.StatusConflict,
+				Code:       "APPLICATION_ACCESS_REJECTED",
+				Message:    "your previous SILAPET access request was rejected",
+			}
+
+		case models.UserStatusDisabled:
+			return nil, &AuthError{
+				StatusCode: http.StatusConflict,
+				Code:       "APPLICATION_ACCESS_DISABLED",
+				Message:    "your SILAPET access is disabled",
+			}
+		}
+	}
+
+	if created {
+		s.fireAdminNotify(*user, "registered", "")
+		go s.notify.NotifyRegistrationReceived(*user)
+	}
+
+	return &AccessRequestResult{
+		User:    user,
+		Created: created,
+	}, nil
+}
+
+// ChangePassword delegates Akun Balai credential ownership to Central SSO.
+func (s *AuthService) ChangePassword(
+	ctx context.Context,
+	accessToken string,
+	oldPassword string,
+	newPassword string,
+) error {
+	return s.centralChangePassword(
+		ctx,
+		accessToken,
+		oldPassword,
+		newPassword,
+	)
+}
+
+// ForgotPassword delegates recovery initiation to Central SSO.
+// Central SSO performs SILAPET membership eligibility checks and preserves
+// generic public responses to prevent account enumeration.
+func (s *AuthService) ForgotPassword(
+	ctx context.Context,
+	email string,
+) error {
+	return s.centralForgotPassword(
+		ctx,
+		strings.TrimSpace(email),
+	)
+}
+
+// ResetPassword delegates recovery verification and password update to Central SSO.
+func (s *AuthService) ResetPassword(
+	ctx context.Context,
+	tokenHash string,
+	newPassword string,
+) error {
+	return s.centralResetPassword(
+		ctx,
+		tokenHash,
+		newPassword,
+	)
 }
 
 // ChangePhoneNumber updates partial the user's phone number in app_users table
@@ -280,25 +383,6 @@ func (s *AuthService) ChangePhoneNumber(ctx context.Context, user *models.AppUse
 
 	_, err := s.users.UpdatePhone(ctx, user.ID, phone)
 	return err
-}
-
-const tempPasswordChars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%"
-
-// generateTempPassword produces a 14-char cryptographically random password
-// - well clear of Supabase's default 6-char minimum, and avoids visually
-// ambiguous characters (0/O, 1/l/I) since an admin may need to read this
-// aloud or retype it for someone.
-func generateTempPassword() (string, error) {
-	const length = 14
-	b := make([]byte, length)
-	for i := range b {
-		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(tempPasswordChars))))
-		if err != nil {
-			return "", err
-		}
-		b[i] = tempPasswordChars[n.Int64()]
-	}
-	return string(b), nil
 }
 
 // fireAdminNotify is fireNotify's counterpart for the admin-facing

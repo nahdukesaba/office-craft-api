@@ -118,6 +118,27 @@ func (r *ResourceRepository) GetByID(ctx context.Context, id string) (*models.Re
 	return res, nil
 }
 
+func (r *ResourceRepository) GetByIDs(ctx context.Context, ids []string) (map[string]*models.Resource, error) {
+	out := make(map[string]*models.Resource, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	query := fmt.Sprintf(`SELECT %s FROM public.resources WHERE id = ANY($1::uuid[]) AND deleted_at IS NULL`, resourceColumns)
+	rows, err := r.pool.Query(ctx, query, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		res, err := scanResource(rows)
+		if err != nil {
+			return nil, err
+		}
+		out[res.ID] = res
+	}
+	return out, rows.Err()
+}
+
 func (r *ResourceRepository) Create(ctx context.Context, in models.ResourceInput) (*models.Resource, error) {
 	isAvailable := true
 	if in.IsAvailable != nil {
