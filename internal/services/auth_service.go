@@ -15,12 +15,10 @@ type AuthUserStore interface {
 		ctx context.Context,
 		id string,
 	) (*models.AppUser, error)
-	CreateMembership(
+	GetByEmail(
 		ctx context.Context,
-		userID string,
-		role string,
-		status string,
-	) (*models.AppUser, bool, error)
+		email string,
+	) (*models.AppUser, error)
 	UpdatePhone(
 		ctx context.Context,
 		id string,
@@ -284,83 +282,55 @@ func (s *AuthService) Register(
 }
 
 type AccessRequestResult struct {
-	User    *models.AppUser
-	Created bool
+	User        *models.AppUser
+	Application string
+	Status      string
+	Created     bool
 }
 
-// RequestAccess verifies an existing Akun Balai through Central SSO and then
-// creates only a pending SILAPET membership.
-//
-// The temporary Central SSO session is discarded because this endpoint proves
-// identity ownership; it is not a SILAPET login.
+// RequestAccess delegates password verification, identity mapping, and the
+// complete membership state machine to Central SSO. SILAPET only reloads the
+// resulting read model for its compatible response and business notification.
 func (s *AuthService) RequestAccess(
 	ctx context.Context,
 	email string,
 	password string,
 ) (*AccessRequestResult, error) {
-	session, err := s.centralLogin(
+	email = strings.ToLower(strings.TrimSpace(email))
+
+	accessRequest, err := s.centralRequestAccess(
 		ctx,
-		strings.TrimSpace(email),
+		email,
 		password,
 	)
 	if err != nil {
 		return nil, err
 	}
 
-	defer s.discardCentralSession(session)
-
-	if session == nil ||
-		strings.TrimSpace(session.User.ID) == "" {
-
-		return nil, &AuthError{
-			StatusCode: http.StatusBadGateway,
-			Code:       "INVALID_SSO_RESPONSE",
-			Message:    "central authentication returned an invalid identity",
-		}
-	}
-
-	user, created, err := s.users.CreateMembership(
+	user, err := s.users.GetByEmail(
 		ctx,
-		session.User.ID,
-		models.RoleUser,
-		models.UserStatusPending,
+		email,
 	)
 	if err != nil {
 		return nil, err
 	}
-
-	if !created {
-		switch user.Status {
-		case models.UserStatusApproved:
-			return nil, &AuthError{
-				StatusCode: http.StatusConflict,
-				Code:       "APPLICATION_ACCESS_EXISTS",
-				Message:    "your account already has access to SILAPET",
-			}
-
-		case models.UserStatusRejected:
-			return nil, &AuthError{
-				StatusCode: http.StatusConflict,
-				Code:       "APPLICATION_ACCESS_REJECTED",
-				Message:    "your previous SILAPET access request was rejected",
-			}
-
-		case models.UserStatusDisabled:
-			return nil, &AuthError{
-				StatusCode: http.StatusConflict,
-				Code:       "APPLICATION_ACCESS_DISABLED",
-				Message:    "your SILAPET access is disabled",
-			}
+	if user == nil {
+		return nil, &AuthError{
+			StatusCode: http.StatusBadGateway,
+			Code:       "INVALID_SSO_RESPONSE",
+			Message:    "central access request membership is unavailable",
 		}
 	}
 
-	if created {
+	if accessRequest.Created {
 		s.fireRegistrationNotifications(*user)
 	}
 
 	return &AccessRequestResult{
-		User:    user,
-		Created: created,
+		User:        user,
+		Application: accessRequest.Application,
+		Status:      accessRequest.Status,
+		Created:     accessRequest.Created,
 	}, nil
 }
 

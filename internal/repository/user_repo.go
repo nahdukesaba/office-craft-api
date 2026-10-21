@@ -321,6 +321,35 @@ func (r *UserRepository) GetByID(
 	return user, nil
 }
 
+// GetByEmail reloads the SILAPET membership projection after Central SSO has
+// processed request-access. It is read-only and does not participate in
+// credential verification or membership state transitions.
+func (r *UserRepository) GetByEmail(
+	ctx context.Context,
+	email string,
+) (*models.AppUser, error) {
+	user, err := scanUser(
+		r.pool.QueryRow(
+			ctx,
+			`SELECT `+silapetUserColumns+silapetUserJoin+`
+			 WHERE LOWER(u.email) = LOWER($1)
+			   AND u.deleted_at IS NULL
+			   AND a.code = $2
+			`,
+			email,
+			models.ApplicationCodeSilapet,
+		),
+	)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	return user, nil
+}
+
 // GetAuthenticationContext reads all mutable authentication and authorization
 // state needed by the protected-request middleware. It never creates or
 // updates Supabase sessions, profiles, applications, or memberships.

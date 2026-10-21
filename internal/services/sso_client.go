@@ -31,6 +31,13 @@ type centralSSORegistration struct {
 	User centralSSOUser `json:"user"`
 }
 
+type centralSSOAccessRequest struct {
+	Message     string `json:"message"`
+	Application string `json:"application"`
+	Status      string `json:"status"`
+	Created     bool   `json:"created"`
+}
+
 type centralSSOError struct {
 	Error   string `json:"error"`
 	Message string `json:"message"`
@@ -178,6 +185,15 @@ func mapCentralSSOError(
 
 	case "unsupported_application":
 		localCode = "UNSUPPORTED_APPLICATION"
+
+	case "application_unavailable":
+		localCode = "APPLICATION_UNAVAILABLE"
+
+	case "application_access_exists":
+		localCode = "APPLICATION_ACCESS_EXISTS"
+
+	case "application_access_blocked":
+		localCode = "APPLICATION_ACCESS_BLOCKED"
 	}
 
 	if localCode == "" {
@@ -259,6 +275,42 @@ func (s *AuthService) centralLogin(
 	}
 
 	return &session, nil
+}
+
+func (s *AuthService) centralRequestAccess(
+	ctx context.Context,
+	email string,
+	password string,
+) (*centralSSOAccessRequest, error) {
+	var response centralSSOAccessRequest
+
+	err := s.centralSSORequest(
+		ctx,
+		http.MethodPost,
+		"/api/v1/auth/request-access",
+		map[string]string{
+			"email":       strings.TrimSpace(email),
+			"password":    password,
+			"application": models.ApplicationCodeSilapet,
+		},
+		"",
+		&response,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	if response.Application != models.ApplicationCodeSilapet ||
+		response.Status != models.UserStatusPending {
+
+		return nil, &AuthError{
+			StatusCode: http.StatusBadGateway,
+			Code:       "INVALID_SSO_RESPONSE",
+			Message:    "central access request returned an invalid result",
+		}
+	}
+
+	return &response, nil
 }
 
 func (s *AuthService) centralRefresh(

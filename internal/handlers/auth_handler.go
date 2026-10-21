@@ -238,8 +238,11 @@ func (h *AuthHandler) RequestAccess(c *fiber.Ctx) error {
 	}
 
 	return c.Status(status).JSON(fiber.Map{
-		"message": message,
-		"user":    result.User,
+		"message":     message,
+		"user":        result.User,
+		"application": result.Application,
+		"status":      result.Status,
+		"created":     result.Created,
 	})
 }
 

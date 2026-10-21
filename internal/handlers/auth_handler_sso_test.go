@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 
+	"office-craft-api/internal/apperror"
 	"office-craft-api/internal/config"
 	"office-craft-api/internal/middleware"
 	"office-craft-api/internal/models"
@@ -24,6 +26,7 @@ const (
 type fakeHandlerAuthUsers struct {
 	user                  *models.AppUser
 	getID                 string
+	getEmail              string
 	createMembershipCalls int
 }
 
@@ -32,6 +35,14 @@ func (f *fakeHandlerAuthUsers) GetByID(
 	id string,
 ) (*models.AppUser, error) {
 	f.getID = id
+	return f.user, nil
+}
+
+func (f *fakeHandlerAuthUsers) GetByEmail(
+	_ context.Context,
+	email string,
+) (*models.AppUser, error) {
+	f.getEmail = email
 	return f.user, nil
 }
 
@@ -130,6 +141,162 @@ func TestRegisterResponseKeepsInternalUserContract(t *testing.T) {
 	}
 	if users.createMembershipCalls != 0 {
 		t.Fatal("handler registration caused duplicate membership creation")
+	}
+}
+
+func TestRequestAccessPreservesPublicContractWithoutTokens(t *testing.T) {
+	tests := []struct {
+		name           string
+		created        bool
+		expectedStatus int
+		expectedMsg    string
+	}{
+		{
+			name:           "new or reopened request",
+			created:        true,
+			expectedStatus: http.StatusCreated,
+			expectedMsg:    "SILAPET access request submitted",
+		},
+		{
+			name:           "already pending request",
+			created:        false,
+			expectedStatus: http.StatusOK,
+			expectedMsg:    "SILAPET access request is already pending",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/api/v1/auth/request-access" {
+					t.Errorf("unexpected Central path %s", r.URL.Path)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"message":     "Permintaan akses berhasil dikirim.",
+					"application": "silapet",
+					"status":      "pending",
+					"created":     test.created,
+				})
+			}))
+			defer server.Close()
+
+			users := &fakeHandlerAuthUsers{user: &models.AppUser{
+				ID:       handlerTestAppUserID,
+				Email:    "employee@example.com",
+				FullName: "Employee Example",
+				Role:     models.RoleUser,
+				Status:   models.UserStatusPending,
+			}}
+			authService := services.NewAuthService(
+				&config.Config{SSOBaseURL: server.URL},
+				users,
+				noopHandlerAuthNotifier{},
+			)
+			handler := NewAuthHandler(authService, users)
+			app := fiber.New()
+			app.Post("/api/auth/request-access", handler.RequestAccess)
+
+			request := httptest.NewRequest(
+				http.MethodPost,
+				"/api/auth/request-access",
+				strings.NewReader(`{
+					"email":"employee@example.com",
+					"password":"password"
+				}`),
+			)
+			request.Header.Set("Content-Type", "application/json")
+			response, err := app.Test(request)
+			if err != nil {
+				t.Fatalf("perform request-access: %v", err)
+			}
+			defer response.Body.Close()
+
+			if response.StatusCode != test.expectedStatus {
+				t.Fatalf("expected status %d, got %d", test.expectedStatus, response.StatusCode)
+			}
+			var payload map[string]any
+			if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if payload["message"] != test.expectedMsg ||
+				payload["application"] != "silapet" ||
+				payload["status"] != "pending" ||
+				payload["created"] != test.created {
+
+				t.Fatalf("unexpected response: %#v", payload)
+			}
+			for _, forbidden := range []string{
+				"token",
+				"accessToken",
+				"refreshToken",
+			} {
+				if _, exists := payload[forbidden]; exists {
+					t.Fatalf("response exposed %q", forbidden)
+				}
+			}
+			if users.createMembershipCalls != 0 {
+				t.Fatal("handler request-access created local membership")
+			}
+		})
+	}
+}
+
+func TestRequestAccessApprovedKeepsCompatibleConflict(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{
+			"error":"application_access_exists",
+			"message":"Akun sudah memiliki akses ke aplikasi ini."
+		}`))
+	}))
+	defer server.Close()
+
+	users := &fakeHandlerAuthUsers{}
+	authService := services.NewAuthService(
+		&config.Config{SSOBaseURL: server.URL},
+		users,
+		noopHandlerAuthNotifier{},
+	)
+	handler := NewAuthHandler(authService, users)
+	app := fiber.New(fiber.Config{
+		ErrorHandler: func(c *fiber.Ctx, err error) error {
+			var appErr *apperror.AppError
+			if !errors.As(err, &appErr) {
+				return c.SendStatus(http.StatusInternalServerError)
+			}
+			return c.Status(appErr.Status).JSON(appErr)
+		},
+	})
+	app.Post("/api/auth/request-access", handler.RequestAccess)
+
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/auth/request-access",
+		strings.NewReader(`{
+			"email":"employee@example.com",
+			"password":"password"
+		}`),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	response, err := app.Test(request)
+	if err != nil {
+		t.Fatalf("perform request-access: %v", err)
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusConflict {
+		t.Fatalf("expected status 409, got %d", response.StatusCode)
+	}
+	var payload struct {
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode conflict response: %v", err)
+	}
+	if payload.Error != "APPLICATION_ACCESS_EXISTS" {
+		t.Fatalf("unexpected error code %q", payload.Error)
 	}
 }
 

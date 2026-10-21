@@ -19,8 +19,19 @@ type fakeAuthUserStore struct {
 
 	getCalls              int
 	getID                 string
+	getByEmailCalls       int
+	getEmail              string
 	createMembershipCalls int
 	updatePhoneCalls      int
+}
+
+func (f *fakeAuthUserStore) GetByEmail(
+	_ context.Context,
+	email string,
+) (*models.AppUser, error) {
+	f.getByEmailCalls++
+	f.getEmail = email
+	return f.user, f.err
 }
 
 func (f *fakeAuthUserStore) GetByID(
@@ -246,35 +257,231 @@ func TestAuthLifecycleStillProxiesCentralSSO(t *testing.T) {
 	}
 }
 
-func TestRequestAccessDocumentsCentralMembershipDependency(t *testing.T) {
+func TestRequestAccessDelegatesToCentralAndNotifiesOnceWhenCreated(t *testing.T) {
+	var mu sync.Mutex
+	calls := make(map[string]int)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls[r.URL.Path]++
+		mu.Unlock()
+
+		if r.Method != http.MethodPost ||
+			r.URL.Path != "/api/v1/auth/request-access" {
+			t.Errorf("unexpected Central request %s %s", r.Method, r.URL.Path)
+		}
+
+		var payload map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode request-access payload: %v", err)
+		}
+		if payload["email"] != "employee@example.com" ||
+			payload["password"] != "password" ||
+			payload["application"] != models.ApplicationCodeSilapet {
+
+			t.Errorf("unexpected request-access payload: %#v", payload)
+		}
+
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusForbidden)
 		_, _ = w.Write([]byte(`{
-			"error":"account_unavailable",
-			"message":"SILAPET membership is required"
+			"message":"Permintaan akses berhasil dikirim.",
+			"application":"silapet",
+			"status":"pending",
+			"created":true
 		}`))
 	}))
 	defer server.Close()
 
-	users := &fakeAuthUserStore{}
+	users := &fakeAuthUserStore{user: &models.AppUser{
+		ID:       "22222222-2222-4222-8222-222222222222",
+		Email:    "employee@example.com",
+		FullName: "Employee Example",
+		Role:     models.RoleUser,
+		Status:   models.UserStatusPending,
+	}}
+	notifier := newFakeAuthNotifier()
 	service := NewAuthService(
 		&config.Config{SSOBaseURL: server.URL},
 		users,
-		newFakeAuthNotifier(),
+		notifier,
 	)
 
-	_, err := service.RequestAccess(
+	result, err := service.RequestAccess(
+		context.Background(),
+		" Employee@Example.com ",
+		"password",
+	)
+	if err != nil {
+		t.Fatalf("request access: %v", err)
+	}
+	if result == nil || !result.Created ||
+		result.Application != models.ApplicationCodeSilapet ||
+		result.Status != models.UserStatusPending || result.User != users.user {
+
+		t.Fatalf("unexpected request-access result: %#v", result)
+	}
+	if users.getByEmailCalls != 1 ||
+		users.getEmail != "employee@example.com" {
+
+		t.Fatal("SILAPET did not reload the read-only membership projection")
+	}
+	if users.createMembershipCalls != 0 {
+		t.Fatal("SILAPET created membership locally")
+	}
+
+	for i := 0; i < 2; i++ {
+		select {
+		case <-notifier.events:
+		case <-time.After(time.Second):
+			t.Fatal("request-access notification was not dispatched")
+		}
+	}
+	adminCount, userCount := notifier.counts()
+	if adminCount != 1 || userCount != 1 {
+		t.Fatalf(
+			"expected one admin and one user notification, got %d and %d",
+			adminCount,
+			userCount,
+		)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if calls["/api/v1/auth/request-access"] != 1 ||
+		calls["/api/v1/auth/login"] != 0 ||
+		calls["/api/v1/auth/logout"] != 0 {
+
+		t.Fatalf("unexpected Central auth calls: %#v", calls)
+	}
+}
+
+func TestRequestAccessExistingPendingDoesNotNotifyAgain(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"message":"Permintaan akses berhasil dikirim.",
+			"application":"silapet",
+			"status":"pending",
+			"created":false
+		}`))
+	}))
+	defer server.Close()
+
+	users := &fakeAuthUserStore{user: &models.AppUser{
+		ID:     "22222222-2222-4222-8222-222222222222",
+		Email:  "employee@example.com",
+		Role:   models.RoleUser,
+		Status: models.UserStatusPending,
+	}}
+	notifier := newFakeAuthNotifier()
+	service := NewAuthService(
+		&config.Config{SSOBaseURL: server.URL},
+		users,
+		notifier,
+	)
+
+	result, err := service.RequestAccess(
 		context.Background(),
 		"employee@example.com",
 		"password",
 	)
-	authErr, ok := err.(*AuthError)
-	if !ok || authErr.Code != "ACCOUNT_UNAVAILABLE" {
-		t.Fatalf("expected documented Central membership rejection, got %v", err)
+	if err != nil || result == nil || result.Created {
+		t.Fatalf("expected idempotent pending success, result=%#v err=%v", result, err)
+	}
+
+	select {
+	case event := <-notifier.events:
+		t.Fatalf("existing pending request sent duplicate %s notification", event)
+	case <-time.After(100 * time.Millisecond):
+	}
+	adminCount, userCount := notifier.counts()
+	if adminCount != 0 || userCount != 0 {
+		t.Fatalf("expected no notifications, got %d and %d", adminCount, userCount)
 	}
 	if users.createMembershipCalls != 0 {
-		t.Fatal("request-access created membership after Central rejected authentication")
+		t.Fatal("existing pending request mutated membership locally")
+	}
+}
+
+func TestRequestAccessMapsCentralErrors(t *testing.T) {
+	tests := []struct {
+		name           string
+		centralStatus  int
+		centralCode    string
+		expectedStatus int
+		expectedCode   string
+	}{
+		{
+			name:           "approved membership",
+			centralStatus:  http.StatusConflict,
+			centralCode:    "application_access_exists",
+			expectedStatus: http.StatusConflict,
+			expectedCode:   "APPLICATION_ACCESS_EXISTS",
+		},
+		{
+			name:           "wrong password",
+			centralStatus:  http.StatusUnauthorized,
+			centralCode:    "invalid_credentials",
+			expectedStatus: http.StatusUnauthorized,
+			expectedCode:   "AUTH_ERROR",
+		},
+		{
+			name:           "rejected or disabled membership",
+			centralStatus:  http.StatusForbidden,
+			centralCode:    "application_access_blocked",
+			expectedStatus: http.StatusForbidden,
+			expectedCode:   "APPLICATION_ACCESS_BLOCKED",
+		},
+		{
+			name:           "central unavailable",
+			centralStatus:  http.StatusServiceUnavailable,
+			centralCode:    "auth_unavailable",
+			expectedStatus: http.StatusServiceUnavailable,
+			expectedCode:   "AUTH_UNAVAILABLE",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			paths := make(map[string]int)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				paths[r.URL.Path]++
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(test.centralStatus)
+				_ = json.NewEncoder(w).Encode(map[string]string{
+					"error":   test.centralCode,
+					"message": "central request rejected",
+				})
+			}))
+			defer server.Close()
+
+			users := &fakeAuthUserStore{}
+			service := NewAuthService(
+				&config.Config{SSOBaseURL: server.URL},
+				users,
+				newFakeAuthNotifier(),
+			)
+
+			_, err := service.RequestAccess(
+				context.Background(),
+				"employee@example.com",
+				"password",
+			)
+			authErr, ok := err.(*AuthError)
+			if !ok || authErr.StatusCode != test.expectedStatus ||
+				authErr.Code != test.expectedCode {
+
+				t.Fatalf("unexpected mapped error: %#v", err)
+			}
+			if users.getByEmailCalls != 0 || users.createMembershipCalls != 0 {
+				t.Fatal("Central rejection triggered local membership work")
+			}
+			if paths["/api/v1/auth/request-access"] != 1 ||
+				paths["/api/v1/auth/login"] != 0 ||
+				paths["/api/v1/auth/logout"] != 0 {
+
+				t.Fatalf("unexpected Central paths: %#v", paths)
+			}
+		})
 	}
 }
 
