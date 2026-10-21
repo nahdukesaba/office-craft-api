@@ -80,11 +80,8 @@ func Load() *Config {
 	if cfg.DatabaseURL == "" {
 		log.Fatal("DATABASE_URL is required (Supabase Postgres connection string)")
 	}
-	if cfg.SupabaseURL == "" || cfg.SupabaseAnonKey == "" {
-		log.Fatal("SUPABASE_URL and SUPABASE_ANON_KEY are required")
-	}
-	if cfg.SupabaseJWTSecret == "" {
-		log.Fatal("SUPABASE_JWT_SECRET is required to validate access tokens")
+	if cfg.SupabaseURL == "" {
+		log.Fatal("SUPABASE_URL is required")
 	}
 	if cfg.SupabaseServiceKey == "" {
 		log.Println("SUPABASE_SERVICE_ROLE_KEY not set: server-side Supabase Storage uploads and signed URLs will be unavailable")

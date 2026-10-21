@@ -36,10 +36,10 @@ func main() {
 	}
 	defer pool.Close()
 
-	// Seed initial admin + sample resources on first boot (idempotent).
-	userRepo := repository.NewUserRepository(pool)
+	// Seed sample business resources on first boot (idempotent). Authentication
+	// identities are owned exclusively by Central SSO.
 	resourceRepo := repository.NewResourceRepository(pool)
-	seedSvc := services.NewSeedService(cfg, userRepo, resourceRepo)
+	seedSvc := services.NewSeedService(resourceRepo)
 	seedSvc.Run(context.Background())
 
 	app := fiber.New(fiber.Config{

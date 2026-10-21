@@ -1,24 +1,29 @@
 package handlers
 
 import (
+	"context"
 	"strings"
 
 	"github.com/gofiber/fiber/v2"
 
 	"office-craft-api/internal/apperror"
 	"office-craft-api/internal/middleware"
-	"office-craft-api/internal/repository"
+	"office-craft-api/internal/models"
 	"office-craft-api/internal/services"
 )
 
+type authHandlerUserStore interface {
+	GetByID(ctx context.Context, id string) (*models.AppUser, error)
+}
+
 type AuthHandler struct {
 	auth  *services.AuthService
-	users *repository.UserRepository
+	users authHandlerUserStore
 }
 
 func NewAuthHandler(
 	auth *services.AuthService,
-	users *repository.UserRepository,
+	users authHandlerUserStore,
 ) *AuthHandler {
 	return &AuthHandler{
 		auth:  auth,

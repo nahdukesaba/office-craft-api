@@ -8,17 +8,48 @@ import (
 
 	"office-craft-api/internal/config"
 	"office-craft-api/internal/models"
-	"office-craft-api/internal/repository"
 )
+
+type AuthUserStore interface {
+	GetByID(
+		ctx context.Context,
+		id string,
+	) (*models.AppUser, error)
+	CreateMembership(
+		ctx context.Context,
+		userID string,
+		role string,
+		status string,
+	) (*models.AppUser, bool, error)
+	UpdatePhone(
+		ctx context.Context,
+		id string,
+		phone string,
+	) (*models.AppUser, error)
+}
+
+type AuthNotifier interface {
+	NotifyAdminsForUserEvent(
+		ctx context.Context,
+		user models.AppUser,
+		kind string,
+		note string,
+	)
+	NotifyRegistrationReceived(user models.AppUser)
+}
 
 type AuthService struct {
 	cfg    *config.Config
-	users  *repository.UserRepository
+	users  AuthUserStore
 	client *http.Client
-	notify *NotifyService
+	notify AuthNotifier
 }
 
-func NewAuthService(cfg *config.Config, users *repository.UserRepository, notify *NotifyService) *AuthService {
+func NewAuthService(
+	cfg *config.Config,
+	users AuthUserStore,
+	notify AuthNotifier,
+) *AuthService {
 	return &AuthService{
 		cfg:    cfg,
 		users:  users,
@@ -214,8 +245,9 @@ func (s *AuthService) authorizeSilapetUser(
 	}
 }
 
-// Register creates a Central Balai identity through Central SSO, then creates
-// only the SILAPET membership. SILAPET never owns or stores credentials here.
+// Register delegates identity and initial SILAPET membership creation to
+// Central SSO. SILAPET only reloads the resulting projection and dispatches
+// its business notifications; it never creates credentials or membership.
 func (s *AuthService) Register(
 	ctx context.Context,
 	email string,
@@ -234,20 +266,19 @@ func (s *AuthService) Register(
 		return nil, err
 	}
 
-	user, created, err := s.users.CreateMembership(
-		ctx,
-		centralUser.ID,
-		models.RoleUser,
-		models.UserStatusPending,
-	)
+	user, err := s.users.GetByID(ctx, centralUser.ID)
 	if err != nil {
 		return nil, err
 	}
-
-	if created {
-		s.fireAdminNotify(*user, "registered", "")
-		go s.notify.NotifyRegistrationReceived(*user)
+	if user == nil {
+		return nil, &AuthError{
+			StatusCode: http.StatusBadGateway,
+			Code:       "INVALID_SSO_RESPONSE",
+			Message:    "central registration membership is unavailable",
+		}
 	}
+
+	s.fireRegistrationNotifications(*user)
 
 	return user, nil
 }
@@ -324,8 +355,7 @@ func (s *AuthService) RequestAccess(
 	}
 
 	if created {
-		s.fireAdminNotify(*user, "registered", "")
-		go s.notify.NotifyRegistrationReceived(*user)
+		s.fireRegistrationNotifications(*user)
 	}
 
 	return &AccessRequestResult{
@@ -385,9 +415,16 @@ func (s *AuthService) ChangePhoneNumber(ctx context.Context, user *models.AppUse
 	return err
 }
 
-// fireAdminNotify is fireNotify's counterpart for the admin-facing
-// direction (new request / started / finished) - same background-goroutine
-// rationale, different recipient set.
-func (s *AuthService) fireAdminNotify(user models.AppUser, kind, note string) {
-	go s.notify.NotifyAdminsForUserEvent(context.Background(), user, kind, note)
+func (s *AuthService) fireRegistrationNotifications(user models.AppUser) {
+	if s.notify == nil {
+		return
+	}
+
+	go s.notify.NotifyAdminsForUserEvent(
+		context.Background(),
+		user,
+		"registered",
+		"",
+	)
+	go s.notify.NotifyRegistrationReceived(user)
 }
