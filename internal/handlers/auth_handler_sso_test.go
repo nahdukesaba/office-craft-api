@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -75,6 +76,98 @@ func (noopHandlerAuthNotifier) NotifyAdminsForUserEvent(
 }
 
 func (noopHandlerAuthNotifier) NotifyRegistrationReceived(models.AppUser) {}
+
+func TestSSOLogoutStartRedirectsToConfiguredCentralFlow(t *testing.T) {
+	users := &fakeHandlerAuthUsers{}
+	authService := services.NewAuthService(
+		&config.Config{
+			SSOBaseURL:               "http://127.0.0.1:18082",
+			SSOClientID:              "silapet-web",
+			SSOPostLogoutRedirectURI: "http://localhost:8081/login",
+		},
+		users,
+		noopHandlerAuthNotifier{},
+	)
+	handler := NewAuthHandler(authService, users)
+	app := fiber.New()
+	app.Get("/api/auth/sso/logout", handler.SSOLogoutStart)
+
+	response, err := app.Test(httptest.NewRequest(
+		http.MethodGet,
+		"/api/auth/sso/logout",
+		nil,
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	location, err := url.Parse(response.Header.Get("Location"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusFound || location.Path != "/logout" ||
+		location.Query().Get("client_id") != "silapet-web" ||
+		location.Query().Get("post_logout_redirect_uri") != "http://localhost:8081/login" {
+		t.Fatalf("unexpected coordinated logout redirect: %d %q", response.StatusCode, location.String())
+	}
+}
+
+func TestLogoutResponseUsesVerifiedLoginSource(t *testing.T) {
+	for _, test := range []struct {
+		name            string
+		loginSource     models.LoginSource
+		centralRequired bool
+	}{
+		{name: "direct login", loginSource: models.LoginSourceDirect, centralRequired: false},
+		{name: "browser SSO login", loginSource: models.LoginSourceSSO, centralRequired: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			logoutCalls := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				logoutCalls++
+				if r.Method != http.MethodPost || r.URL.Path != "/api/v1/auth/logout" ||
+					r.Header.Get("Authorization") != "Bearer verified-access-token" {
+					t.Errorf("unexpected Central logout request %s %s", r.Method, r.URL.Path)
+				}
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			defer server.Close()
+
+			users := &fakeHandlerAuthUsers{}
+			handler := NewAuthHandler(
+				services.NewAuthService(&config.Config{SSOBaseURL: server.URL}, users, noopHandlerAuthNotifier{}),
+				users,
+			)
+			app := fiber.New()
+			app.Post(
+				"/api/auth/logout",
+				func(c *fiber.Ctx) error {
+					c.Locals(middleware.LocalsLoginSource, test.loginSource)
+					return c.Next()
+				},
+				handler.Logout,
+			)
+
+			request := httptest.NewRequest(http.MethodPost, "/api/auth/logout", nil)
+			request.Header.Set("Authorization", "Bearer verified-access-token")
+			response, err := app.Test(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer response.Body.Close()
+			var payload struct {
+				CentralLogoutRequired bool `json:"centralLogoutRequired"`
+			}
+			if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+				t.Fatal(err)
+			}
+			if response.StatusCode != http.StatusOK || logoutCalls != 1 ||
+				payload.CentralLogoutRequired != test.centralRequired {
+				t.Fatalf("unexpected logout result: status=%d calls=%d payload=%#v",
+					response.StatusCode, logoutCalls, payload)
+			}
+		})
+	}
+}
 
 func TestRegisterResponseKeepsInternalUserContract(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

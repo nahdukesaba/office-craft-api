@@ -14,6 +14,7 @@ import (
 // Setup wires repositories -> services -> handlers -> routes onto the fiber app.
 func Setup(app *fiber.App, cfg *config.Config, pool *pgxpool.Pool) {
 	userRepo := repository.NewUserRepository(pool)
+	ssoFlowRepo := repository.NewBrowserSSOFlowRepository(pool)
 	resourceRepo := repository.NewResourceRepository(pool)
 	bookingRepo := repository.NewBookingRepository(pool)
 	proofRepo := repository.NewProofRepository(pool)
@@ -23,6 +24,7 @@ func Setup(app *fiber.App, cfg *config.Config, pool *pgxpool.Pool) {
 	whatsappSvc := services.NewWhatsAppService(cfg)
 	notifySvc := services.NewNotifyService(bookingRepo, userRepo, resourceRepo, emailSvc, whatsappSvc)
 	authSvc := services.NewAuthService(cfg, userRepo, notifySvc)
+	authSvc.SetBrowserSSOFlowStore(ssoFlowRepo)
 	bookingSvc := services.NewBookingService(bookingRepo, resourceRepo, userRepo, proofRepo, eventRepo, notifySvc)
 	proofSvc := services.NewProofService(bookingRepo)
 	reportSvc := services.NewReportService(bookingRepo, resourceRepo, userRepo)
@@ -51,12 +53,15 @@ func Setup(app *fiber.App, cfg *config.Config, pool *pgxpool.Pool) {
 	// -------- Auth --------
 	auth := api.Group("/auth")
 	auth.Post("/login", authHandler.Login)
+	auth.Get("/sso/start", authHandler.SSOStart)
+	auth.Get("/sso/logout", authHandler.SSOLogoutStart)
+	auth.Post("/sso/exchange", authHandler.SSOExchange)
 	auth.Post("/register", authHandler.Register)
 	auth.Post("/request-access", authHandler.RequestAccess)
 	auth.Post("/forgot-password", authHandler.ForgotPassword)
 	auth.Post("/reset-password", authHandler.ResetPassword)
 	auth.Post("/refresh", authHandler.Refresh)
-	auth.Post("/logout", authHandler.Logout)
+	auth.Post("/logout", requireAuth, authHandler.Logout)
 	auth.Get("/me", requireAuth, authHandler.Me)
 	auth.Put("/password", requireAuth, authHandler.ChangePassword)
 	auth.Put("/phone", requireAuth, authHandler.ChangePhoneNumber)

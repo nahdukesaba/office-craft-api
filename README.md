@@ -55,6 +55,22 @@ All routes are under `/api`. See the original spec for the full contract; summar
 | Public | `GET /public/bookings/all`, `GET /public/bookings/resource/:resourceId` |
 | Stats | `GET /stats/overview` (admin only) |
 
+Browser SSO is an additional login option. `GET /api/auth/sso/start` creates a
+short-lived state/PKCE flow and redirects to Central SSO. The frontend callback
+posts `code` and `state` to `POST /api/auth/sso/exchange`; this backend consumes
+state once and exchanges the code with Central server-to-server. Direct login
+continues to use the existing endpoints. Configure `SSO_CLIENT_ID`, the exact
+`SSO_REDIRECT_URI`, a base64 `SSO_FLOW_HMAC_KEY` of at least 32 bytes, and
+`SSO_FLOW_TTL`. Migration `000009_browser_sso_flows` stores only state hashes.
+`POST /api/auth/logout` derives the login source from the signed Supabase `amr`
+claim that was verified by the auth middleware. It returns
+`centralLogoutRequired=true` only for sessions issued by the Browser SSO
+magic-link/OTP exchange. Direct password sessions return `false`, including
+when the browser happens to retain an unrelated Central cookie.
+`GET /api/auth/sso/logout` starts the coordinated Central logout using the fixed
+`SSO_CLIENT_ID` and `SSO_POST_LOGOUT_REDIRECT_URI`; browser input cannot select
+the final redirect URI.
+
 Business rules enforced in `internal/services/booking_service.go`:
 - Start/end must land on 30-minute boundaries.
 - Max duration 4 hours.

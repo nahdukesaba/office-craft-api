@@ -56,6 +56,64 @@ type refreshRequest struct {
 	RefreshToken string `json:"refreshToken"`
 }
 
+type browserSSOExchangeRequest struct {
+	Code   string `json:"code"`
+	State  string `json:"state"`
+	Status string `json:"status"`
+}
+
+func (h *AuthHandler) SSOStart(c *fiber.Ctx) error {
+	authorizeURL, err := h.auth.StartBrowserSSO(c.UserContext())
+	if err != nil {
+		if ae, ok := err.(*services.AuthError); ok {
+			return apperror.New(ae.StatusCode, ae.Code, ae.Message)
+		}
+		return apperror.Internal("failed to start browser SSO")
+	}
+	return c.Redirect(authorizeURL, fiber.StatusFound)
+}
+
+func (h *AuthHandler) SSOLogoutStart(c *fiber.Ctx) error {
+	logoutURL, err := h.auth.StartBrowserSSOLogout()
+	if err != nil {
+		if ae, ok := err.(*services.AuthError); ok {
+			return apperror.New(ae.StatusCode, ae.Code, ae.Message)
+		}
+		return apperror.Internal("failed to start coordinated logout")
+	}
+	return c.Redirect(logoutURL, fiber.StatusFound)
+}
+
+func (h *AuthHandler) SSOExchange(c *fiber.Ctx) error {
+	var req browserSSOExchangeRequest
+	if err := c.BodyParser(&req); err != nil {
+		return apperror.BadRequest("INVALID_BODY", "invalid request body")
+	}
+	result, err := h.auth.CompleteBrowserSSO(
+		c.UserContext(), req.State, req.Code, req.Status,
+	)
+	if err != nil {
+		if ae, ok := err.(*services.AuthError); ok {
+			return apperror.New(ae.StatusCode, ae.Code, ae.Message)
+		}
+		return apperror.Internal("browser SSO exchange failed")
+	}
+	if result == nil {
+		return apperror.Internal("browser SSO returned no result")
+	}
+	if result.Session == nil {
+		return c.JSON(fiber.Map{"status": result.Status})
+	}
+	return c.JSON(authResponse{
+		Token:        result.Session.AccessToken,
+		RefreshToken: result.Session.RefreshToken,
+		TokenType:    result.Session.TokenType,
+		ExpiresIn:    result.Session.ExpiresIn,
+		ExpiresAt:    result.Session.ExpiresAt,
+		User:         result.Session.User,
+	})
+}
+
 func (h *AuthHandler) Login(c *fiber.Ctx) error {
 	var req loginRequest
 	if err := c.BodyParser(&req); err != nil {
@@ -150,7 +208,12 @@ func (h *AuthHandler) Logout(c *fiber.Ctx) error {
 		)
 	}
 
-	if err := h.auth.Logout(c.Context(), parts[1]); err != nil {
+	result, err := h.auth.Logout(
+		c.Context(),
+		parts[1],
+		middleware.LoginSourceFromCtx(c),
+	)
+	if err != nil {
 		if ae, ok := err.(*services.AuthError); ok {
 			return apperror.New(
 				ae.StatusCode,
@@ -163,7 +226,9 @@ func (h *AuthHandler) Logout(c *fiber.Ctx) error {
 	}
 
 	middleware.InvalidateCentralSSOAuthCache()
-	return c.SendStatus(fiber.StatusNoContent)
+	return c.JSON(fiber.Map{
+		"centralLogoutRequired": result.CentralLogoutRequired,
+	})
 }
 
 func (h *AuthHandler) Register(c *fiber.Ctx) error {

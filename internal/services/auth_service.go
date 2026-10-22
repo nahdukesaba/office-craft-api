@@ -37,10 +37,11 @@ type AuthNotifier interface {
 }
 
 type AuthService struct {
-	cfg    *config.Config
-	users  AuthUserStore
-	client *http.Client
-	notify AuthNotifier
+	cfg      *config.Config
+	users    AuthUserStore
+	client   *http.Client
+	notify   AuthNotifier
+	ssoFlows BrowserSSOFlowStore
 }
 
 func NewAuthService(
@@ -121,22 +122,33 @@ func (s *AuthService) Refresh(
 	return result, nil
 }
 
-// Logout delegates session invalidation to Central SSO.
+type LogoutResult struct {
+	CentralLogoutRequired bool
+}
+
+// Logout delegates application-session invalidation to Central SSO and tells
+// the caller whether the verified session originated from Browser SSO.
 func (s *AuthService) Logout(
 	ctx context.Context,
 	accessToken string,
-) error {
+	loginSource models.LoginSource,
+) (*LogoutResult, error) {
 	accessToken = strings.TrimSpace(accessToken)
 
 	if accessToken == "" {
-		return &AuthError{
+		return nil, &AuthError{
 			StatusCode: http.StatusUnauthorized,
 			Code:       "INVALID_TOKEN",
 			Message:    "access token is required",
 		}
 	}
 
-	return s.centralLogout(ctx, accessToken)
+	if err := s.centralLogout(ctx, accessToken); err != nil {
+		return nil, err
+	}
+	return &LogoutResult{
+		CentralLogoutRequired: loginSource == models.LoginSourceSSO,
+	}, nil
 }
 
 // discardCentralSession best-effort revokes a Central SSO session that

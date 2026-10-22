@@ -280,6 +280,31 @@ func (s *AuthService) centralLogin(
 	return &session, nil
 }
 
+func (s *AuthService) centralBrowserSSOExchange(
+	ctx context.Context,
+	code string,
+	codeVerifier string,
+) (*centralSSOSession, error) {
+	var session centralSSOSession
+	err := s.centralSSORequest(
+		ctx,
+		http.MethodPost,
+		"/api/v1/auth/sso/exchange",
+		map[string]string{
+			"code":         code,
+			"clientId":     s.cfg.SSOClientID,
+			"redirectUri":  s.cfg.SSORedirectURI,
+			"codeVerifier": codeVerifier,
+		},
+		"",
+		&session,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &session, nil
+}
+
 func (s *AuthService) centralRequestAccess(
 	ctx context.Context,
 	email string,

@@ -82,8 +82,9 @@ func validTestClaims(issuer string) supabaseClaims {
 		AppRoles: map[string]string{
 			models.ApplicationCodeSilapet: models.RoleUser,
 		},
-		SessionID: testSessionID,
-		Role:      "authenticated",
+		SessionID:             testSessionID,
+		Role:                  "authenticated",
+		AuthenticationMethods: []supabaseAuthenticationMethod{{Method: "password"}},
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer:    issuer,
 			Subject:   testAuthUserID,
@@ -128,7 +129,8 @@ func TestTokenVerifierAcceptsValidES256TokenAndCachesJWKS(t *testing.T) {
 		if verified.AuthUserID != testAuthUserID ||
 			verified.AppUserID != testAppUserID ||
 			verified.SessionID != testSessionID ||
-			verified.AppRole != models.RoleUser {
+			verified.AppRole != models.RoleUser ||
+			verified.LoginSource != models.LoginSourceDirect {
 
 			t.Fatal("verified token claims changed")
 		}
@@ -136,6 +138,22 @@ func TestTokenVerifierAcceptsValidES256TokenAndCachesJWKS(t *testing.T) {
 
 	if server.calls.Load() != 1 {
 		t.Fatalf("expected one cached JWKS fetch, got %d", server.calls.Load())
+	}
+}
+
+func TestTokenVerifierDerivesBrowserSSOLoginSourceFromSignedAMR(t *testing.T) {
+	key := generateTestKey(t)
+	server := newJWKSTestServer(t, []jwk{publicJWK("active-key", key)})
+	claims := validTestClaims(server.server.URL + "/auth/v1")
+	claims.AuthenticationMethods = []supabaseAuthenticationMethod{{Method: "magiclink"}}
+	token := signTestToken(t, jwt.SigningMethodES256, key, "active-key", claims)
+
+	verified, err := NewTokenVerifier(server.server.URL).Verify(context.Background(), token)
+	if err != nil {
+		t.Fatalf("verify Browser SSO token: %v", err)
+	}
+	if verified.LoginSource != models.LoginSourceSSO {
+		t.Fatalf("expected signed magic-link session to be SSO, got %q", verified.LoginSource)
 	}
 }
 

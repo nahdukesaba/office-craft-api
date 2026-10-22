@@ -4,6 +4,8 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/joho/godotenv"
 )
@@ -20,6 +22,11 @@ type Config struct {
 	SupabaseServiceKey             string
 	SupabaseJWTSecret              string
 	SSOBaseURL                     string
+	SSOClientID                    string
+	SSORedirectURI                 string
+	SSOPostLogoutRedirectURI       string
+	SSOFlowHMACKey                 string
+	SSOFlowTTL                     time.Duration
 	SupabaseStorageBucketResources string
 	SupabaseStorageBucketProofs    string
 	SeedAdminEmail                 string
@@ -60,6 +67,11 @@ func Load() *Config {
 		SupabaseServiceKey:             getEnv("SUPABASE_SERVICE_ROLE_KEY", ""),
 		SupabaseJWTSecret:              getEnv("SUPABASE_JWT_SECRET", ""),
 		SSOBaseURL:                     getEnv("SSO_BASE_URL", "http://127.0.0.1:8082"),
+		SSOClientID:                    getEnv("SSO_CLIENT_ID", "silapet-web"),
+		SSORedirectURI:                 getEnv("SSO_REDIRECT_URI", "http://localhost:8081/auth/sso/callback"),
+		SSOPostLogoutRedirectURI:       getEnv("SSO_POST_LOGOUT_REDIRECT_URI", "http://localhost:8081/login"),
+		SSOFlowHMACKey:                 getEnv("SSO_FLOW_HMAC_KEY", ""),
+		SSOFlowTTL:                     getEnvDuration("SSO_FLOW_TTL", 5*time.Minute),
 		SupabaseStorageBucketResources: getEnv("SUPABASE_STORAGE_BUCKET_RESOURCES", "resource-photos"),
 		SupabaseStorageBucketProofs:    getEnv("SUPABASE_STORAGE_BUCKET_PROOFS", "booking-proofs"),
 		SeedAdminEmail:                 getEnv("SEED_ADMIN_EMAIL", "admin@office-craft.local"),
@@ -96,6 +108,18 @@ func Load() *Config {
 	}
 
 	return cfg
+}
+
+func getEnvDuration(key string, fallback time.Duration) time.Duration {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil || parsed <= 0 {
+		return fallback
+	}
+	return parsed
 }
 
 func getEnv(key, fallback string) string {

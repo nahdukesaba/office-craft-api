@@ -60,10 +60,11 @@ func (f *fakeAuthenticationContextStore) GetAuthenticationContext(
 
 func validVerifiedAccessToken(role string) *VerifiedAccessToken {
 	return &VerifiedAccessToken{
-		AuthUserID: testAuthUserID,
-		AppUserID:  testAppUserID,
-		SessionID:  testSessionID,
-		AppRole:    role,
+		AuthUserID:  testAuthUserID,
+		AppUserID:   testAppUserID,
+		SessionID:   testSessionID,
+		AppRole:     role,
+		LoginSource: models.LoginSourceDirect,
 	}
 }
 
@@ -163,6 +164,9 @@ func TestRequireAuthUsesMappedIdentityAndCurrentRole(t *testing.T) {
 					}
 					if RoleFromCtx(c) != role {
 						t.Fatal("locals role did not use current membership role")
+					}
+					if LoginSourceFromCtx(c) != models.LoginSourceDirect {
+						t.Fatal("locals login source did not use verified token metadata")
 					}
 					if email, _ := c.Locals(LocalsEmail).(string); email != "employee@example.com" {
 						t.Fatal("locals email did not use resolved profile email")

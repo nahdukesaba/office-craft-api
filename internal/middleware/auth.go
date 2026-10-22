@@ -24,28 +24,35 @@ import (
 )
 
 const (
-	LocalsUserID = "userID"
-	LocalsEmail  = "email"
-	LocalsRole   = "role"
+	LocalsUserID      = "userID"
+	LocalsEmail       = "email"
+	LocalsRole        = "role"
+	LocalsLoginSource = "loginSource"
 
 	supabaseAudience = "authenticated"
 	silapetCode      = "silapet"
 )
 
 type supabaseClaims struct {
-	AppUserID string            `json:"app_user_id"`
-	AppRoles  map[string]string `json:"app_roles"`
-	SessionID string            `json:"session_id"`
-	Role      string            `json:"role"`
-	Email     string            `json:"email"`
+	AppUserID             string                         `json:"app_user_id"`
+	AppRoles              map[string]string              `json:"app_roles"`
+	SessionID             string                         `json:"session_id"`
+	Role                  string                         `json:"role"`
+	Email                 string                         `json:"email"`
+	AuthenticationMethods []supabaseAuthenticationMethod `json:"amr"`
 	jwt.RegisteredClaims
 }
 
+type supabaseAuthenticationMethod struct {
+	Method string `json:"method"`
+}
+
 type VerifiedAccessToken struct {
-	AuthUserID string
-	AppUserID  string
-	SessionID  string
-	AppRole    string
+	AuthUserID  string
+	AppUserID   string
+	SessionID   string
+	AppRole     string
+	LoginSource models.LoginSource
 }
 
 type AccessTokenVerifier interface {
@@ -188,11 +195,22 @@ func (v *TokenVerifier) Verify(
 	}
 
 	return &VerifiedAccessToken{
-		AuthUserID: authUserID,
-		AppUserID:  appUserID,
-		SessionID:  sessionID,
-		AppRole:    appRole,
+		AuthUserID:  authUserID,
+		AppUserID:   appUserID,
+		SessionID:   sessionID,
+		AppRole:     appRole,
+		LoginSource: loginSourceFromAuthenticationMethods(claims.AuthenticationMethods),
 	}, nil
+}
+
+func loginSourceFromAuthenticationMethods(methods []supabaseAuthenticationMethod) models.LoginSource {
+	for _, method := range methods {
+		switch strings.ToLower(strings.TrimSpace(method.Method)) {
+		case "otp", "magiclink", "sso", "saml":
+			return models.LoginSourceSSO
+		}
+	}
+	return models.LoginSourceDirect
 }
 
 func validUUIDClaim(name, value string) (string, error) {
@@ -353,6 +371,7 @@ func RequireAuth(
 		c.Locals(LocalsUserID, identity.AppUserID)
 		c.Locals(LocalsEmail, identity.Email)
 		c.Locals(LocalsRole, identity.MembershipRole)
+		c.Locals(LocalsLoginSource, claims.LoginSource)
 		return c.Next()
 	}
 }
@@ -437,4 +456,12 @@ func UserIDFromCtx(c *fiber.Ctx) string {
 func RoleFromCtx(c *fiber.Ctx) string {
 	v, _ := c.Locals(LocalsRole).(string)
 	return v
+}
+
+func LoginSourceFromCtx(c *fiber.Ctx) models.LoginSource {
+	value, _ := c.Locals(LocalsLoginSource).(models.LoginSource)
+	if value != models.LoginSourceSSO {
+		return models.LoginSourceDirect
+	}
+	return value
 }

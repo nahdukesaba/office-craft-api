@@ -227,7 +227,11 @@ func TestAuthLifecycleStillProxiesCentralSSO(t *testing.T) {
 	if err != nil || refresh.RefreshToken != "supabase-refresh-token" {
 		t.Fatalf("refresh proxy failed: %v", err)
 	}
-	if err := service.Logout(context.Background(), "supabase-access-token"); err != nil {
+	if _, err := service.Logout(
+		context.Background(),
+		"supabase-access-token",
+		models.LoginSourceDirect,
+	); err != nil {
 		t.Fatalf("logout proxy failed: %v", err)
 	}
 	if err := service.ChangePassword(context.Background(), "supabase-access-token", "old", "new-password"); err != nil {
