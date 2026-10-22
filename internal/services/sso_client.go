@@ -165,6 +165,9 @@ func mapCentralSSOError(
 	case "account_rejected":
 		localCode = "ACCOUNT_REJECTED"
 
+	case "account_disabled":
+		localCode = "ACCOUNT_DISABLED"
+
 	case "account_already_exists":
 		localCode = "ACCOUNT_ALREADY_EXISTS"
 

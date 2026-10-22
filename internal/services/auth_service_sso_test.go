@@ -257,6 +257,73 @@ func TestAuthLifecycleStillProxiesCentralSSO(t *testing.T) {
 	}
 }
 
+func TestLoginMapsCentralMembershipErrorsWithoutLocalMutation(t *testing.T) {
+	tests := []struct {
+		name           string
+		centralCode    string
+		expectedCode   string
+		expectedStatus int
+	}{
+		{
+			name:           "auto enrolled pending",
+			centralCode:    "account_pending",
+			expectedCode:   "ACCOUNT_PENDING_APPROVAL",
+			expectedStatus: http.StatusForbidden,
+		},
+		{
+			name:           "rejected",
+			centralCode:    "account_rejected",
+			expectedCode:   "ACCOUNT_REJECTED",
+			expectedStatus: http.StatusForbidden,
+		},
+		{
+			name:           "disabled",
+			centralCode:    "account_disabled",
+			expectedCode:   "ACCOUNT_DISABLED",
+			expectedStatus: http.StatusForbidden,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.URL.Path != "/api/v1/auth/login" {
+					t.Errorf("unexpected Central SSO request %s %s", r.Method, r.URL.Path)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(test.expectedStatus)
+				_ = json.NewEncoder(w).Encode(map[string]string{
+					"error":   test.centralCode,
+					"message": "application membership blocks login",
+				})
+			}))
+			defer server.Close()
+
+			users := &fakeAuthUserStore{}
+			service := NewAuthService(
+				&config.Config{SSOBaseURL: server.URL},
+				users,
+				newFakeAuthNotifier(),
+			)
+
+			session, err := service.Login(
+				context.Background(),
+				"employee@example.com",
+				"password",
+			)
+			authErr, ok := err.(*AuthError)
+			if !ok || authErr.Code != test.expectedCode ||
+				authErr.StatusCode != test.expectedStatus || session != nil {
+
+				t.Fatalf("unexpected login result session=%#v err=%#v", session, err)
+			}
+			if users.getCalls != 0 || users.createMembershipCalls != 0 {
+				t.Fatal("Central login rejection triggered local membership work")
+			}
+		})
+	}
+}
+
 func TestRequestAccessDelegatesToCentralAndNotifiesOnceWhenCreated(t *testing.T) {
 	var mu sync.Mutex
 	calls := make(map[string]int)

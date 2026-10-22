@@ -11,13 +11,13 @@ import (
 	_ "time/tzdata"
 
 	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/gofiber/fiber/v2/middleware/logger"
 	"github.com/gofiber/fiber/v2/middleware/recover"
 
 	"office-craft-api/internal/apperror"
 	"office-craft-api/internal/config"
 	"office-craft-api/internal/db"
+	appmiddleware "office-craft-api/internal/middleware"
 	"office-craft-api/internal/repository"
 	"office-craft-api/internal/router"
 	"office-craft-api/internal/services"
@@ -50,11 +50,7 @@ func main() {
 
 	app.Use(recover.New())
 	app.Use(logger.New())
-	app.Use(cors.New(cors.Config{
-		AllowOrigins: cfg.AllowedOrigins,
-		AllowHeaders: "Origin, Content-Type, Accept, Authorization",
-		AllowMethods: "GET, POST, PUT, PATCH, DELETE, OPTIONS",
-	}))
+	app.Use(appmiddleware.NewCORS(cfg.AllowedOrigins))
 
 	router.Setup(app, cfg, pool)
 

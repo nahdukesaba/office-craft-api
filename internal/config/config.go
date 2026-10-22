@@ -8,6 +8,8 @@ import (
 	"github.com/joho/godotenv"
 )
 
+const DefaultAllowedOrigins = "http://localhost:8081,http://127.0.0.1:8081"
+
 // Config holds all runtime configuration for the service.
 type Config struct {
 	Port                           string
@@ -63,7 +65,7 @@ func Load() *Config {
 		SeedAdminEmail:                 getEnv("SEED_ADMIN_EMAIL", "admin@office-craft.local"),
 		SeedAdminPassword:              getEnv("SEED_ADMIN_PASSWORD", "ChangeMe123!"),
 		SeedAdminFullName:              getEnv("SEED_ADMIN_FULL_NAME", "System Administrator"),
-		AllowedOrigins:                 getEnv("ALLOWED_ORIGINS", "*"),
+		AllowedOrigins:                 getEnv("ALLOWED_ORIGINS", DefaultAllowedOrigins),
 
 		SMTPHost:      getEnv("SMTP_HOST", ""),
 		SMTPPort:      getEnvInt("SMTP_PORT", 587),
