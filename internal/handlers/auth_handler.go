@@ -177,6 +177,13 @@ func (h *AuthHandler) Logout(c *fiber.Ctx) error {
 	if !ok {
 		return apperror.Unauthorized("application session is unavailable")
 	}
+	if session.LoginSource == models.LoginSourceSSO {
+		// Preserve the app cookie and upstream session until Central confirms.
+		// Cancel returns through /login and validates the same SID; Confirm
+		// revokes it and the next /me or refresh clears the invalid app cookie.
+		c.Set(fiber.HeaderCacheControl, "no-store")
+		return c.JSON(fiber.Map{"centralLogoutRequired": true})
+	}
 	defer h.appSessions.Clear(c)
 
 	result, err := h.auth.Logout(

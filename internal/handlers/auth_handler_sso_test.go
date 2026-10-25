@@ -173,7 +173,16 @@ func TestLogoutResponseUsesVerifiedLoginSource(t *testing.T) {
 			if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
 				t.Fatal(err)
 			}
-			if response.StatusCode != http.StatusOK || logoutCalls != 1 ||
+			wantLogoutCalls := 1
+			if test.centralRequired {
+				wantLogoutCalls = 0
+				if len(response.Cookies()) != 0 {
+					t.Fatal("SSO initiation modified app cookies before Central confirmation")
+				}
+			} else if len(response.Cookies()) == 0 || response.Cookies()[0].Value != "" {
+				t.Fatal("DIRECT logout did not expire the app cookie")
+			}
+			if response.StatusCode != http.StatusOK || logoutCalls != wantLogoutCalls ||
 				payload.CentralLogoutRequired != test.centralRequired {
 				t.Fatalf("unexpected logout result: status=%d calls=%d payload=%#v",
 					response.StatusCode, logoutCalls, payload)
