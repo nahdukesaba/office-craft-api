@@ -67,7 +67,8 @@ func validAppSession(data AppSessionData) bool {
 		(data.Role == models.RoleUser || data.Role == models.RoleAdmin) &&
 		data.Status == models.UserStatusApproved &&
 		(data.LoginSource == models.LoginSourceDirect || data.LoginSource == models.LoginSourceSSO) &&
-		(data.LoginSource != models.LoginSourceDirect || strings.TrimSpace(data.SID) == "")
+		((data.LoginSource == models.LoginSourceDirect && strings.TrimSpace(data.SID) == "") ||
+			(data.LoginSource == models.LoginSourceSSO && strings.TrimSpace(data.SID) != ""))
 }
 
 func (m *AppSessionManager) Encode(data AppSessionData) (string, error) {

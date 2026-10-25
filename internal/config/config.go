@@ -27,6 +27,7 @@ type Config struct {
 	SSOPostLogoutRedirectURI       string
 	SSOFlowHMACKey                 string
 	SSOFlowTTL                     time.Duration
+	SSOIntrospectionSecret         string
 	AppSessionKey                  string
 	AppSessionTTL                  time.Duration
 	AppSessionCookieSecure         bool
@@ -75,6 +76,7 @@ func Load() *Config {
 		SSOPostLogoutRedirectURI:       getEnv("SSO_POST_LOGOUT_REDIRECT_URI", "http://localhost:8081/login"),
 		SSOFlowHMACKey:                 getEnv("SSO_FLOW_HMAC_KEY", ""),
 		SSOFlowTTL:                     getEnvDuration("SSO_FLOW_TTL", 5*time.Minute),
+		SSOIntrospectionSecret:         getEnv("SSO_INTROSPECTION_SECRET", ""),
 		AppSessionKey:                  getEnv("APP_SESSION_KEY", ""),
 		AppSessionTTL:                  getEnvDuration("APP_SESSION_TTL", 7*24*time.Hour),
 		AppSessionCookieSecure:         getEnvBool("APP_SESSION_COOKIE_SECURE", true),

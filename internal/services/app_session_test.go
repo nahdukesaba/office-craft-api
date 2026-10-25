@@ -34,6 +34,9 @@ func TestAppSessionRoundTripAndTamperRejection(t *testing.T) {
 
 func TestDirectAppSessionCannotCarrySIDAndExpiredSessionFails(t *testing.T) {
 	manager := testAppSessionManager(t)
+	if _, err := manager.Encode(AppSessionData{AppUserID: "user-id", Role: models.RoleUser, Status: models.UserStatusApproved, LoginSource: models.LoginSourceSSO, AccessToken: "access", RefreshToken: "refresh"}); err == nil {
+		t.Fatal("SSO session without trusted SID was accepted")
+	}
 	if _, err := manager.Encode(AppSessionData{AppUserID: "user-id", Role: models.RoleUser, Status: models.UserStatusApproved, LoginSource: models.LoginSourceDirect, SID: "forged", AccessToken: "access", RefreshToken: "refresh"}); err == nil {
 		t.Fatal("direct session accepted SID")
 	}

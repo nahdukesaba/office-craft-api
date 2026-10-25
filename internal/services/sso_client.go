@@ -44,6 +44,10 @@ type centralSSOError struct {
 	Message string `json:"message"`
 }
 
+type centralSSOIntrospection struct {
+	Active bool `json:"active"`
+}
+
 // AuthSession is the session shape SILAPET needs from Central SSO.
 // User authorization is always resolved locally from SILAPET membership.
 type AuthSession struct {
@@ -305,6 +309,38 @@ func (s *AuthService) centralBrowserSSOExchange(
 		return nil, err
 	}
 	return &session, nil
+}
+
+func (s *AuthService) IntrospectBrowserSSO(
+	ctx context.Context,
+	sid string,
+	appUserID string,
+) (bool, error) {
+	sid = strings.TrimSpace(sid)
+	appUserID = strings.TrimSpace(appUserID)
+	secret := strings.TrimSpace(s.cfg.SSOIntrospectionSecret)
+	clientID := strings.TrimSpace(s.cfg.SSOClientID)
+	if sid == "" || appUserID == "" || clientID == "" || len(secret) < 32 {
+		return false, nil
+	}
+
+	var result centralSSOIntrospection
+	err := s.centralSSORequest(
+		ctx,
+		http.MethodPost,
+		"/api/v1/auth/sso/introspect",
+		map[string]string{
+			"clientId":  clientID,
+			"sid":       sid,
+			"appUserId": appUserID,
+		},
+		secret,
+		&result,
+	)
+	if err != nil {
+		return false, err
+	}
+	return result.Active, nil
 }
 
 func (s *AuthService) centralRequestAccess(

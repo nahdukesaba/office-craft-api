@@ -42,7 +42,7 @@ func Setup(app *fiber.App, cfg *config.Config, pool *pgxpool.Pool, appSessions *
 
 	tokenVerifier := middleware.NewTokenVerifier(cfg.SupabaseURL)
 	requireAuth := middleware.RequireAuth(tokenVerifier, userRepo)
-	requireSession := middleware.RequireAppSession(appSessions)
+	requireSession := middleware.RequireAppSession(appSessions, authSvc)
 	requireAdmin := middleware.RequireAdmin()
 
 	api := app.Group("/api")

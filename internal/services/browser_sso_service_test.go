@@ -130,7 +130,7 @@ func TestBrowserSSOExchangeIsServerToServerAndReturnsNormalSession(t *testing.T)
 			t.Fatalf("unexpected exchange request: %#v", request)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"accessToken":"access","refreshToken":"refresh","tokenType":"bearer","expiresIn":3600,"expiresAt":9999999999,"user":{"id":"user-id","email":"person@example.com"}}`))
+		_, _ = w.Write([]byte(`{"sid":"11111111-1111-4111-8111-111111111111","accessToken":"access","refreshToken":"refresh","tokenType":"bearer","expiresIn":3600,"expiresAt":9999999999,"user":{"id":"user-id","email":"person@example.com"}}`))
 	}))
 	defer server.Close()
 
@@ -148,7 +148,37 @@ func TestBrowserSSOExchangeIsServerToServerAndReturnsNormalSession(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Session == nil || result.Session.AccessToken != "access" || result.Session.User.ID != "user-id" {
+	if result.Session == nil || result.Session.SID != "11111111-1111-4111-8111-111111111111" || result.Session.AccessToken != "access" || result.Session.User.ID != "user-id" {
 		t.Fatalf("unexpected session: %#v", result)
+	}
+}
+
+func TestBrowserSSOIntrospectionUsesServerCredentialAndBinding(t *testing.T) {
+	const secret = "silapet-test-introspection-secret-0001"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/auth/sso/introspect" ||
+			r.Header.Get("Authorization") != "Bearer "+secret {
+			t.Fatalf("unexpected introspection request: %s %s", r.Method, r.URL.Path)
+		}
+		var request map[string]string
+		if json.NewDecoder(r.Body).Decode(&request) != nil ||
+			request["clientId"] != "silapet-web" ||
+			request["sid"] != "11111111-1111-4111-8111-111111111111" ||
+			request["appUserId"] != "user-id" {
+			t.Fatalf("unexpected introspection binding: %#v", request)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"active":true}`))
+	}))
+	defer server.Close()
+
+	service := NewAuthService(&config.Config{
+		SSOBaseURL: server.URL, SSOClientID: "silapet-web", SSOIntrospectionSecret: secret,
+	}, &fakeSilapetSSOUsers{}, nil)
+	active, err := service.IntrospectBrowserSSO(
+		context.Background(), "11111111-1111-4111-8111-111111111111", "user-id",
+	)
+	if err != nil || !active {
+		t.Fatalf("trusted SSO session was not active: active=%t err=%v", active, err)
 	}
 }

@@ -139,6 +139,15 @@ func (h *AuthHandler) Refresh(c *fiber.Ctx) error {
 		h.appSessions.Clear(c)
 		return apperror.Unauthorized("invalid or expired application session")
 	}
+	if current.LoginSource == models.LoginSourceSSO {
+		active, introspectionErr := h.auth.IntrospectBrowserSSO(
+			c.UserContext(), current.SID, current.AppUserID,
+		)
+		if introspectionErr != nil || !active {
+			h.appSessions.Clear(c)
+			return apperror.Unauthorized("SSO session is invalid or expired")
+		}
+	}
 
 	session, err := h.auth.Refresh(
 		c.Context(),
