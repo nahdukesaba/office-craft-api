@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -71,6 +72,30 @@ func TestBrowserSSOLogoutStartUsesConfiguredRegisteredValues(t *testing.T) {
 		parsed.Query().Get("client_id") != "silapet-web" ||
 		parsed.Query().Get("post_logout_redirect_uri") != "http://localhost:8081/login" {
 		t.Fatalf("unexpected coordinated logout URL: %q", logoutURL)
+	}
+
+	withCancel, err := service.StartBrowserSSOLogout("/bookings/123?page=2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsedCancel, err := url.Parse(withCancel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsedCancel.Query().Get("cancel_return") != "/bookings/123?page=2" {
+		t.Fatalf("cancel_return was not forwarded: %q", withCancel)
+	}
+
+	withUnsafe, err := service.StartBrowserSSOLogout("https://evil.example/phish")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsedUnsafe, err := url.Parse(withUnsafe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsedUnsafe.Query().Get("cancel_return") != "" || strings.Contains(withUnsafe, "evil.example") {
+		t.Fatalf("unsafe cancel_return was not stripped: %q", withUnsafe)
 	}
 }
 

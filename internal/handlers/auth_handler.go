@@ -71,7 +71,11 @@ func (h *AuthHandler) SSOStart(c *fiber.Ctx) error {
 }
 
 func (h *AuthHandler) SSOLogoutStart(c *fiber.Ctx) error {
-	logoutURL, err := h.auth.StartBrowserSSOLogout()
+	cancelReturn := strings.TrimSpace(c.Query("cancel_return"))
+	if cancelReturn == "" {
+		cancelReturn = strings.TrimSpace(c.Query("return_to"))
+	}
+	logoutURL, err := h.auth.StartBrowserSSOLogout(cancelReturn)
 	if err != nil {
 		if ae, ok := err.(*services.AuthError); ok {
 			return apperror.New(ae.StatusCode, ae.Code, ae.Message)

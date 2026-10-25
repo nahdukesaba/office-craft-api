@@ -63,7 +63,7 @@ func (s *AuthService) StartBrowserSSO(ctx context.Context) (string, error) {
 	return authorizeURL.String(), nil
 }
 
-func (s *AuthService) StartBrowserSSOLogout() (string, error) {
+func (s *AuthService) StartBrowserSSOLogout(cancelReturn ...string) (string, error) {
 	clientID := strings.TrimSpace(s.cfg.SSOClientID)
 	postLogoutRedirectURI := strings.TrimSpace(s.cfg.SSOPostLogoutRedirectURI)
 	centralURL, err := url.Parse(strings.TrimRight(s.cfg.SSOBaseURL, "/") + "/logout")
@@ -78,8 +78,27 @@ func (s *AuthService) StartBrowserSSOLogout() (string, error) {
 	query := centralURL.Query()
 	query.Set("client_id", clientID)
 	query.Set("post_logout_redirect_uri", postLogoutRedirectURI)
+	if len(cancelReturn) > 0 && cancelReturn[0] != "" {
+		if sanitized := sanitizeBrowserSSOCancelReturn(cancelReturn[0]); sanitized != "" {
+			query.Set("cancel_return", sanitized)
+		}
+	}
 	centralURL.RawQuery = query.Encode()
 	return centralURL.String(), nil
+}
+
+func sanitizeBrowserSSOCancelReturn(value string) string {
+	value = strings.TrimSpace(value)
+	if !strings.HasPrefix(value, "/") || strings.HasPrefix(value, "//") || strings.HasPrefix(value, "/\\") ||
+		strings.Contains(value, "\\") || strings.Contains(value, "#") {
+		return ""
+	}
+	for i := 0; i < len(value); i++ {
+		if value[i] <= ' ' || value[i] == 0x7f {
+			return ""
+		}
+	}
+	return value
 }
 
 func (s *AuthService) CompleteBrowserSSO(
