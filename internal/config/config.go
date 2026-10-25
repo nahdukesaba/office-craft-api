@@ -27,6 +27,9 @@ type Config struct {
 	SSOPostLogoutRedirectURI       string
 	SSOFlowHMACKey                 string
 	SSOFlowTTL                     time.Duration
+	AppSessionKey                  string
+	AppSessionTTL                  time.Duration
+	AppSessionCookieSecure         bool
 	SupabaseStorageBucketResources string
 	SupabaseStorageBucketProofs    string
 	SeedAdminEmail                 string
@@ -72,6 +75,9 @@ func Load() *Config {
 		SSOPostLogoutRedirectURI:       getEnv("SSO_POST_LOGOUT_REDIRECT_URI", "http://localhost:8081/login"),
 		SSOFlowHMACKey:                 getEnv("SSO_FLOW_HMAC_KEY", ""),
 		SSOFlowTTL:                     getEnvDuration("SSO_FLOW_TTL", 5*time.Minute),
+		AppSessionKey:                  getEnv("APP_SESSION_KEY", ""),
+		AppSessionTTL:                  getEnvDuration("APP_SESSION_TTL", 7*24*time.Hour),
+		AppSessionCookieSecure:         getEnvBool("APP_SESSION_COOKIE_SECURE", true),
 		SupabaseStorageBucketResources: getEnv("SUPABASE_STORAGE_BUCKET_RESOURCES", "resource-photos"),
 		SupabaseStorageBucketProofs:    getEnv("SUPABASE_STORAGE_BUCKET_PROOFS", "booking-proofs"),
 		SeedAdminEmail:                 getEnv("SEED_ADMIN_EMAIL", "admin@office-craft.local"),
@@ -140,4 +146,16 @@ func getEnvInt(key string, fallback int) int {
 		return fallback
 	}
 	return n
+}
+
+func getEnvBool(key string, fallback bool) bool {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return fallback
+	}
+	return parsed
 }

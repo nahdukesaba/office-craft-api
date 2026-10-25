@@ -24,8 +24,7 @@ Golang + Fiber REST API for the Office-Craft Resource Management System, backed 
 
 ```bash
 cp .env.example .env
-# fill in DATABASE_URL, SUPABASE_URL, SUPABASE_ANON_KEY,
-# SUPABASE_SERVICE_ROLE_KEY, SUPABASE_JWT_SECRET
+# fill in DATABASE_URL, Central SSO settings, and APP_SESSION_KEY
 ```
 
 ## 3. Run locally
@@ -62,14 +61,23 @@ state once and exchanges the code with Central server-to-server. Direct login
 continues to use the existing endpoints. Configure `SSO_CLIENT_ID`, the exact
 `SSO_REDIRECT_URI`, a base64 `SSO_FLOW_HMAC_KEY` of at least 32 bytes, and
 `SSO_FLOW_TTL`. Migration `000009_browser_sso_flows` stores only state hashes.
-`POST /api/auth/logout` derives the login source from the signed Supabase `amr`
-claim that was verified by the auth middleware. It returns
+`POST /api/auth/logout` derives the login source from the authenticated,
+encrypted SILAPET application session. It returns
 `centralLogoutRequired=true` only for sessions issued by the Browser SSO
 magic-link/OTP exchange. Direct password sessions return `false`, including
 when the browser happens to retain an unrelated Central cookie.
 `GET /api/auth/sso/logout` starts the coordinated Central logout using the fixed
 `SSO_CLIENT_ID` and `SSO_POST_LOGOUT_REDIRECT_URI`; browser input cannot select
 the final redirect URI.
+
+Direct login and Browser SSO both terminate in an encrypted HttpOnly
+`silapet-session` cookie. Public auth responses contain only the SILAPET user;
+Central access tokens, refresh tokens, and trusted `sid` are never returned to
+browser JavaScript. Generate `APP_SESSION_KEY` as a base64-encoded 32-byte
+secret, configure `APP_SESSION_TTL`, and set `APP_SESSION_COOKIE_SECURE=true`
+outside local HTTP development. Frontend clients must send credentials with
+requests. Protected routes decrypt the cookie, verify Central identity, and
+recheck current SILAPET membership role and status before reaching handlers.
 
 Business rules enforced in `internal/services/booking_service.go`:
 - Start/end must land on 30-minute boundaries.

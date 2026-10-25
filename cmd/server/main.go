@@ -25,6 +25,14 @@ import (
 
 func main() {
 	cfg := config.Load()
+	appSessionManager, err := services.NewAppSessionManager(
+		cfg.AppSessionKey,
+		cfg.AppSessionCookieSecure,
+		cfg.AppSessionTTL,
+	)
+	if err != nil {
+		log.Fatalf("application session configuration error: %v", err)
+	}
 
 	if err := db.RunMigrations(cfg); err != nil {
 		log.Fatalf("migration error: %v", err)
@@ -51,8 +59,9 @@ func main() {
 	app.Use(recover.New())
 	app.Use(logger.New())
 	app.Use(appmiddleware.NewCORS(cfg.AllowedOrigins))
+	app.Use(appmiddleware.RequireTrustedBrowserOrigin(cfg.AllowedOrigins))
 
-	router.Setup(app, cfg, pool)
+	router.Setup(app, cfg, pool, appSessionManager)
 
 	log.Printf("Office-Craft API listening on :%s", cfg.Port)
 	if err := app.Listen(":" + cfg.Port); err != nil {

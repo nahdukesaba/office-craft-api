@@ -195,6 +195,7 @@ func (s *AuthService) buildSilapetSession(
 	}
 
 	return &AuthSession{
+		SID:          session.SID,
 		AccessToken:  session.AccessToken,
 		RefreshToken: session.RefreshToken,
 		TokenType:    session.TokenType,

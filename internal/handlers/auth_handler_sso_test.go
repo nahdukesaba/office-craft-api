@@ -2,13 +2,16 @@ package handlers
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 
@@ -133,15 +136,25 @@ func TestLogoutResponseUsesVerifiedLoginSource(t *testing.T) {
 			defer server.Close()
 
 			users := &fakeHandlerAuthUsers{}
+			appSessions, err := services.NewAppSessionManager(
+				base64.StdEncoding.EncodeToString([]byte("01234567890123456789012345678901")), false, time.Hour,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
 			handler := NewAuthHandler(
 				services.NewAuthService(&config.Config{SSOBaseURL: server.URL}, users, noopHandlerAuthNotifier{}),
 				users,
+				appSessions,
 			)
 			app := fiber.New()
 			app.Post(
 				"/api/auth/logout",
 				func(c *fiber.Ctx) error {
-					c.Locals(middleware.LocalsLoginSource, test.loginSource)
+					c.Locals(middleware.LocalsAppSession, &services.AppSessionData{
+						AppUserID: handlerTestAppUserID, LoginSource: test.loginSource,
+						AccessToken: "verified-access-token", RefreshToken: "refresh-token",
+					})
 					return c.Next()
 				},
 				handler.Logout,
@@ -166,6 +179,113 @@ func TestLogoutResponseUsesVerifiedLoginSource(t *testing.T) {
 					response.StatusCode, logoutCalls, payload)
 			}
 		})
+	}
+}
+
+func TestDirectLoginCreatesHttpOnlyAppSessionWithoutExposingTokens(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/auth/login" {
+			t.Fatalf("unexpected Central path %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"accessToken":"central-access","refreshToken":"central-refresh","user":{"id":"` + handlerTestAppUserID + `","email":"employee@example.com","role":"user"}}`))
+	}))
+	defer server.Close()
+
+	users := &fakeHandlerAuthUsers{user: &models.AppUser{
+		ID: handlerTestAppUserID, Email: "employee@example.com", FullName: "Employee",
+		Role: models.RoleAdmin, Status: models.UserStatusApproved,
+	}}
+	manager, err := services.NewAppSessionManager(base64.StdEncoding.EncodeToString([]byte("01234567890123456789012345678901")), false, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewAuthHandler(services.NewAuthService(&config.Config{SSOBaseURL: server.URL}, users, noopHandlerAuthNotifier{}), users, manager)
+	app := fiber.New()
+	app.Post("/api/auth/login", handler.Login)
+	request := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(`{"email":"employee@example.com","password":"password"}`))
+	request.Header.Set("Content-Type", "application/json")
+	response, err := app.Test(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(response.Body)
+	if response.StatusCode != http.StatusOK || strings.Contains(string(body), "central-access") || strings.Contains(string(body), "central-refresh") || strings.Contains(string(body), "sid") {
+		t.Fatalf("sensitive auth material exposed: status=%d body=%s", response.StatusCode, body)
+	}
+	var sessionCookie *http.Cookie
+	for _, cookie := range response.Cookies() {
+		if cookie.Name == services.AppSessionCookieName {
+			sessionCookie = cookie
+		}
+	}
+	if sessionCookie == nil || !sessionCookie.HttpOnly || sessionCookie.Path != "/" {
+		t.Fatalf("unexpected app session cookie: %#v", sessionCookie)
+	}
+	decoded, err := manager.Decode(sessionCookie.Value)
+	if err != nil || decoded.LoginSource != models.LoginSourceDirect || decoded.SID != "" || decoded.Role != models.RoleAdmin {
+		t.Fatalf("unexpected direct session: %#v %v", decoded, err)
+	}
+}
+
+func TestSSOAppSessionSIDComesFromTrustedServerSession(t *testing.T) {
+	manager, err := services.NewAppSessionManager(base64.StdEncoding.EncodeToString([]byte("01234567890123456789012345678901")), false, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewAuthHandler(nil, nil, manager)
+	app := fiber.New()
+	app.Get("/issue", func(c *fiber.Ctx) error {
+		return handler.setAppSession(c, &services.AuthSession{
+			SID: "trusted-central-sid", AccessToken: "access", RefreshToken: "refresh",
+			User: &models.AppUser{ID: handlerTestAppUserID, Role: models.RoleUser, Status: models.UserStatusApproved},
+		}, models.LoginSourceSSO)
+	})
+	response, err := app.Test(httptest.NewRequest(http.MethodGet, "/issue?sid=browser-forged", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cookie := response.Cookies()[0]
+	decoded, err := manager.Decode(cookie.Value)
+	if err != nil || decoded.SID != "trusted-central-sid" || decoded.LoginSource != models.LoginSourceSSO {
+		t.Fatalf("unexpected SSO session: %#v %v", decoded, err)
+	}
+}
+
+func TestRefreshUsesHttpOnlySessionCredentialWithoutBrowserBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]string
+		if r.URL.Path != "/api/v1/auth/refresh" || json.NewDecoder(r.Body).Decode(&payload) != nil || payload["refreshToken"] != "central-refresh" {
+			t.Fatalf("unexpected refresh request")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"accessToken":"rotated-access","refreshToken":"rotated-refresh","user":{"id":"` + handlerTestAppUserID + `","email":"employee@example.com"}}`))
+	}))
+	defer server.Close()
+	users := &fakeHandlerAuthUsers{user: &models.AppUser{ID: handlerTestAppUserID, Email: "employee@example.com", Role: models.RoleUser, Status: models.UserStatusApproved}}
+	manager, err := services.NewAppSessionManager(base64.StdEncoding.EncodeToString([]byte("01234567890123456789012345678901")), false, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cookieValue, err := manager.Encode(services.AppSessionData{AppUserID: handlerTestAppUserID, Role: models.RoleUser, Status: models.UserStatusApproved, LoginSource: models.LoginSourceDirect, AccessToken: "old-access", RefreshToken: "central-refresh"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewAuthHandler(services.NewAuthService(&config.Config{SSOBaseURL: server.URL}, users, noopHandlerAuthNotifier{}), users, manager)
+	app := fiber.New()
+	app.Post("/api/auth/refresh", handler.Refresh)
+	request := httptest.NewRequest(http.MethodPost, "/api/auth/refresh", nil)
+	request.AddCookie(&http.Cookie{Name: services.AppSessionCookieName, Value: cookieValue})
+	response, err := app.Test(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("unexpected refresh status %d", response.StatusCode)
+	}
+	rotated, err := manager.Decode(response.Cookies()[0].Value)
+	if err != nil || rotated.AccessToken != "rotated-access" || rotated.RefreshToken != "rotated-refresh" || rotated.SID != "" {
+		t.Fatalf("unexpected rotated session: %#v %v", rotated, err)
 	}
 }
 
@@ -419,6 +539,15 @@ func TestMeResolvesInternalAppUserID(t *testing.T) {
 
 	if resp.StatusCode != http.StatusOK || users.getID != handlerTestAppUserID {
 		t.Fatal("current user lookup did not use internal app_users ID")
+	}
+	var payload map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode current user response: %v", err)
+	}
+	for _, forbidden := range []string{"token", "accessToken", "refreshToken", "sid"} {
+		if _, exists := payload[forbidden]; exists {
+			t.Fatalf("current user response exposed %q", forbidden)
+		}
 	}
 }
 

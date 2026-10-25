@@ -19,6 +19,7 @@ type centralSSOUser struct {
 }
 
 type centralSSOSession struct {
+	SID          string         `json:"sid"`
 	AccessToken  string         `json:"accessToken"`
 	RefreshToken string         `json:"refreshToken"`
 	TokenType    string         `json:"tokenType"`
@@ -46,6 +47,7 @@ type centralSSOError struct {
 // AuthSession is the session shape SILAPET needs from Central SSO.
 // User authorization is always resolved locally from SILAPET membership.
 type AuthSession struct {
+	SID          string
 	AccessToken  string
 	RefreshToken string
 	TokenType    string

@@ -238,6 +238,7 @@ func TestRequireAuthRejectsInvalidCurrentState(t *testing.T) {
 		{"deleted membership", func(v *models.AuthenticationContext) { v.MembershipDeleted = true }, models.RoleUser, 403, "APPLICATION_ACCESS_UNAVAILABLE"},
 		{"pending membership", func(v *models.AuthenticationContext) { v.MembershipStatus = models.UserStatusPending }, models.RoleUser, 403, "ACCOUNT_PENDING_APPROVAL"},
 		{"rejected membership", func(v *models.AuthenticationContext) { v.MembershipStatus = models.UserStatusRejected }, models.RoleUser, 403, "ACCOUNT_REJECTED"},
+		{"disabled membership", func(v *models.AuthenticationContext) { v.MembershipStatus = models.UserStatusDisabled }, models.RoleUser, 403, "ACCOUNT_DISABLED"},
 		{"invalid role", func(v *models.AuthenticationContext) { v.MembershipRole = "owner" }, "owner", 403, "APPLICATION_ACCESS_UNAVAILABLE"},
 		{"stale role", func(v *models.AuthenticationContext) { v.MembershipRole = models.RoleAdmin }, models.RoleUser, 401, "TOKEN_AUTHORIZATION_STALE"},
 	}

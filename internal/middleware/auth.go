@@ -367,6 +367,12 @@ func RequireAuth(
 		if err := validateAuthenticationContext(claims, identity); err != nil {
 			return err
 		}
+		if session, ok := AppSessionFromCtx(c); ok {
+			if session.AppUserID != identity.AppUserID || session.LoginSource != claims.LoginSource ||
+				session.Role != identity.MembershipRole || session.Status != identity.MembershipStatus {
+				return apperror.Unauthorized("application session authorization is stale")
+			}
+		}
 
 		c.Locals(LocalsUserID, identity.AppUserID)
 		c.Locals(LocalsEmail, identity.Email)
