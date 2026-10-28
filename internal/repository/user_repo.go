@@ -321,6 +321,101 @@ func (r *UserRepository) GetByID(
 	return user, nil
 }
 
+// GetByEmail reloads the SILAPET membership projection after Central SSO has
+// processed request-access. It is read-only and does not participate in
+// credential verification or membership state transitions.
+func (r *UserRepository) GetByEmail(
+	ctx context.Context,
+	email string,
+) (*models.AppUser, error) {
+	user, err := scanUser(
+		r.pool.QueryRow(
+			ctx,
+			`SELECT `+silapetUserColumns+silapetUserJoin+`
+			 WHERE LOWER(u.email) = LOWER($1)
+			   AND u.deleted_at IS NULL
+			   AND a.code = $2
+			`,
+			email,
+			models.ApplicationCodeSilapet,
+		),
+	)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	return user, nil
+}
+
+// GetAuthenticationContext reads all mutable authentication and authorization
+// state needed by the protected-request middleware. It never creates or
+// updates Supabase sessions, profiles, applications, or memberships.
+func (r *UserRepository) GetAuthenticationContext(
+	ctx context.Context,
+	appUserID string,
+	sessionID string,
+	applicationCode string,
+) (*models.AuthenticationContext, error) {
+	var result models.AuthenticationContext
+
+	err := r.pool.QueryRow(
+		ctx,
+		`
+			SELECT
+				u.id::text,
+				COALESCE(u.auth_user_id::text, ''),
+				u.email,
+				u.deleted_at IS NOT NULL,
+				s.id IS NOT NULL,
+				COALESCE(s.user_id::text, ''),
+				a.id IS NOT NULL,
+				COALESCE(a.code, ''),
+				COALESCE(a.is_active, FALSE),
+				m.id IS NOT NULL,
+				COALESCE(m.role, ''),
+				COALESCE(m.status, ''),
+				m.deleted_at IS NOT NULL
+			FROM public.app_users u
+			LEFT JOIN auth.sessions s
+				ON s.id = $2::uuid
+			LEFT JOIN public.applications a
+				ON a.code = $3
+			LEFT JOIN public.app_memberships m
+				ON m.app_user_id = u.id
+				AND m.application_id = a.id
+			WHERE u.id = $1::uuid
+		`,
+		appUserID,
+		sessionID,
+		applicationCode,
+	).Scan(
+		&result.AppUserID,
+		&result.AuthUserID,
+		&result.Email,
+		&result.UserDeleted,
+		&result.SessionFound,
+		&result.SessionUserID,
+		&result.ApplicationFound,
+		&result.ApplicationCode,
+		&result.ApplicationActive,
+		&result.MembershipFound,
+		&result.MembershipRole,
+		&result.MembershipStatus,
+		&result.MembershipDeleted,
+	)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	return &result, nil
+}
+
 func (r *UserRepository) GetByIDs(
 	ctx context.Context,
 	ids []string,

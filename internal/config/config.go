@@ -4,9 +4,13 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/joho/godotenv"
 )
+
+const DefaultAllowedOrigins = "http://localhost:8081,http://127.0.0.1:8081"
 
 // Config holds all runtime configuration for the service.
 type Config struct {
@@ -18,6 +22,15 @@ type Config struct {
 	SupabaseServiceKey             string
 	SupabaseJWTSecret              string
 	SSOBaseURL                     string
+	SSOClientID                    string
+	SSORedirectURI                 string
+	SSOPostLogoutRedirectURI       string
+	SSOFlowHMACKey                 string
+	SSOFlowTTL                     time.Duration
+	SSOIntrospectionSecret         string
+	AppSessionKey                  string
+	AppSessionTTL                  time.Duration
+	AppSessionCookieSecure         bool
 	SupabaseStorageBucketResources string
 	SupabaseStorageBucketProofs    string
 	SeedAdminEmail                 string
@@ -58,12 +71,21 @@ func Load() *Config {
 		SupabaseServiceKey:             getEnv("SUPABASE_SERVICE_ROLE_KEY", ""),
 		SupabaseJWTSecret:              getEnv("SUPABASE_JWT_SECRET", ""),
 		SSOBaseURL:                     getEnv("SSO_BASE_URL", "http://127.0.0.1:8082"),
+		SSOClientID:                    getEnv("SSO_CLIENT_ID", "silapet-web"),
+		SSORedirectURI:                 getEnv("SSO_REDIRECT_URI", "http://localhost:8081/auth/sso/callback"),
+		SSOPostLogoutRedirectURI:       getEnv("SSO_POST_LOGOUT_REDIRECT_URI", "http://localhost:8081/login"),
+		SSOFlowHMACKey:                 getEnv("SSO_FLOW_HMAC_KEY", ""),
+		SSOFlowTTL:                     getEnvDuration("SSO_FLOW_TTL", 5*time.Minute),
+		SSOIntrospectionSecret:         getEnv("SSO_INTROSPECTION_SECRET", ""),
+		AppSessionKey:                  getEnv("APP_SESSION_KEY", ""),
+		AppSessionTTL:                  getEnvDuration("APP_SESSION_TTL", 7*24*time.Hour),
+		AppSessionCookieSecure:         getEnvBool("APP_SESSION_COOKIE_SECURE", true),
 		SupabaseStorageBucketResources: getEnv("SUPABASE_STORAGE_BUCKET_RESOURCES", "resource-photos"),
 		SupabaseStorageBucketProofs:    getEnv("SUPABASE_STORAGE_BUCKET_PROOFS", "booking-proofs"),
 		SeedAdminEmail:                 getEnv("SEED_ADMIN_EMAIL", "admin@office-craft.local"),
 		SeedAdminPassword:              getEnv("SEED_ADMIN_PASSWORD", "ChangeMe123!"),
 		SeedAdminFullName:              getEnv("SEED_ADMIN_FULL_NAME", "System Administrator"),
-		AllowedOrigins:                 getEnv("ALLOWED_ORIGINS", "*"),
+		AllowedOrigins:                 getEnv("ALLOWED_ORIGINS", DefaultAllowedOrigins),
 
 		SMTPHost:      getEnv("SMTP_HOST", ""),
 		SMTPPort:      getEnvInt("SMTP_PORT", 587),
@@ -80,11 +102,8 @@ func Load() *Config {
 	if cfg.DatabaseURL == "" {
 		log.Fatal("DATABASE_URL is required (Supabase Postgres connection string)")
 	}
-	if cfg.SupabaseURL == "" || cfg.SupabaseAnonKey == "" {
-		log.Fatal("SUPABASE_URL and SUPABASE_ANON_KEY are required")
-	}
-	if cfg.SupabaseJWTSecret == "" {
-		log.Fatal("SUPABASE_JWT_SECRET is required to validate access tokens")
+	if cfg.SupabaseURL == "" {
+		log.Fatal("SUPABASE_URL is required")
 	}
 	if cfg.SupabaseServiceKey == "" {
 		log.Println("SUPABASE_SERVICE_ROLE_KEY not set: server-side Supabase Storage uploads and signed URLs will be unavailable")
@@ -97,6 +116,18 @@ func Load() *Config {
 	}
 
 	return cfg
+}
+
+func getEnvDuration(key string, fallback time.Duration) time.Duration {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil || parsed <= 0 {
+		return fallback
+	}
+	return parsed
 }
 
 func getEnv(key, fallback string) string {
@@ -117,4 +148,16 @@ func getEnvInt(key string, fallback int) int {
 		return fallback
 	}
 	return n
+}
+
+func getEnvBool(key string, fallback bool) bool {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return fallback
+	}
+	return parsed
 }

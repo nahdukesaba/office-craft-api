@@ -1,29 +1,40 @@
 package handlers
 
 import (
+	"context"
 	"strings"
 
 	"github.com/gofiber/fiber/v2"
 
 	"office-craft-api/internal/apperror"
 	"office-craft-api/internal/middleware"
-	"office-craft-api/internal/repository"
+	"office-craft-api/internal/models"
 	"office-craft-api/internal/services"
 )
 
+type authHandlerUserStore interface {
+	GetByID(ctx context.Context, id string) (*models.AppUser, error)
+}
+
 type AuthHandler struct {
-	auth  *services.AuthService
-	users *repository.UserRepository
+	auth        *services.AuthService
+	users       authHandlerUserStore
+	appSessions *services.AppSessionManager
 }
 
 func NewAuthHandler(
 	auth *services.AuthService,
-	users *repository.UserRepository,
+	users authHandlerUserStore,
+	appSessions ...*services.AppSessionManager,
 ) *AuthHandler {
-	return &AuthHandler{
+	handler := &AuthHandler{
 		auth:  auth,
 		users: users,
 	}
+	if len(appSessions) > 0 {
+		handler.appSessions = appSessions[0]
+	}
+	return handler
 }
 
 type loginRequest struct {
@@ -39,16 +50,65 @@ type registerRequest struct {
 }
 
 type authResponse struct {
-	Token        string      `json:"token"`
-	RefreshToken string      `json:"refreshToken,omitempty"`
-	TokenType    string      `json:"tokenType,omitempty"`
-	ExpiresIn    int         `json:"expiresIn,omitempty"`
-	ExpiresAt    int64       `json:"expiresAt,omitempty"`
-	User         interface{} `json:"user"`
+	User interface{} `json:"user"`
 }
 
-type refreshRequest struct {
-	RefreshToken string `json:"refreshToken"`
+type browserSSOExchangeRequest struct {
+	Code   string `json:"code"`
+	State  string `json:"state"`
+	Status string `json:"status"`
+}
+
+func (h *AuthHandler) SSOStart(c *fiber.Ctx) error {
+	authorizeURL, err := h.auth.StartBrowserSSO(c.UserContext())
+	if err != nil {
+		if ae, ok := err.(*services.AuthError); ok {
+			return apperror.New(ae.StatusCode, ae.Code, ae.Message)
+		}
+		return apperror.Internal("failed to start browser SSO")
+	}
+	return c.Redirect(authorizeURL, fiber.StatusFound)
+}
+
+func (h *AuthHandler) SSOLogoutStart(c *fiber.Ctx) error {
+	cancelReturn := strings.TrimSpace(c.Query("cancel_return"))
+	if cancelReturn == "" {
+		cancelReturn = strings.TrimSpace(c.Query("return_to"))
+	}
+	logoutURL, err := h.auth.StartBrowserSSOLogout(cancelReturn)
+	if err != nil {
+		if ae, ok := err.(*services.AuthError); ok {
+			return apperror.New(ae.StatusCode, ae.Code, ae.Message)
+		}
+		return apperror.Internal("failed to start coordinated logout")
+	}
+	return c.Redirect(logoutURL, fiber.StatusFound)
+}
+
+func (h *AuthHandler) SSOExchange(c *fiber.Ctx) error {
+	var req browserSSOExchangeRequest
+	if err := c.BodyParser(&req); err != nil {
+		return apperror.BadRequest("INVALID_BODY", "invalid request body")
+	}
+	result, err := h.auth.CompleteBrowserSSO(
+		c.UserContext(), req.State, req.Code, req.Status,
+	)
+	if err != nil {
+		if ae, ok := err.(*services.AuthError); ok {
+			return apperror.New(ae.StatusCode, ae.Code, ae.Message)
+		}
+		return apperror.Internal("browser SSO exchange failed")
+	}
+	if result == nil {
+		return apperror.Internal("browser SSO returned no result")
+	}
+	if result.Session == nil {
+		return c.JSON(fiber.Map{"status": result.Status})
+	}
+	if err := h.setAppSession(c, result.Session, models.LoginSourceSSO); err != nil {
+		return apperror.Internal("failed to create application session")
+	}
+	return c.JSON(authResponse{User: result.Session.User})
 }
 
 func (h *AuthHandler) Login(c *fiber.Ctx) error {
@@ -68,36 +128,34 @@ func (h *AuthHandler) Login(c *fiber.Ctx) error {
 		return apperror.Internal("login failed")
 	}
 
-	return c.JSON(authResponse{
-		Token:        session.AccessToken,
-		RefreshToken: session.RefreshToken,
-		TokenType:    session.TokenType,
-		ExpiresIn:    session.ExpiresIn,
-		ExpiresAt:    session.ExpiresAt,
-		User:         session.User,
-	})
+	if err := h.setAppSession(c, session, models.LoginSourceDirect); err != nil {
+		return apperror.Internal("failed to create application session")
+	}
+	return c.JSON(authResponse{User: session.User})
 }
 
 func (h *AuthHandler) Refresh(c *fiber.Ctx) error {
-	var req refreshRequest
-
-	if err := c.BodyParser(&req); err != nil {
-		return apperror.BadRequest(
-			"INVALID_BODY",
-			"invalid request body",
-		)
+	if h.appSessions == nil {
+		return apperror.New(fiber.StatusServiceUnavailable, "AUTH_UNAVAILABLE", "application session is unavailable")
 	}
-
-	if strings.TrimSpace(req.RefreshToken) == "" {
-		return apperror.BadRequest(
-			"VALIDATION_ERROR",
-			"refreshToken is required",
+	current, err := h.appSessions.Read(c)
+	if err != nil {
+		h.appSessions.Clear(c)
+		return apperror.Unauthorized("invalid or expired application session")
+	}
+	if current.LoginSource == models.LoginSourceSSO {
+		active, introspectionErr := h.auth.IntrospectBrowserSSO(
+			c.UserContext(), current.SID, current.AppUserID,
 		)
+		if introspectionErr != nil || !active {
+			h.appSessions.Clear(c)
+			return apperror.Unauthorized("SSO session is invalid or expired")
+		}
 	}
 
 	session, err := h.auth.Refresh(
 		c.Context(),
-		req.RefreshToken,
+		current.RefreshToken,
 	)
 	if err != nil {
 		if ae, ok := err.(*services.AuthError); ok {
@@ -111,41 +169,33 @@ func (h *AuthHandler) Refresh(c *fiber.Ctx) error {
 		return apperror.Internal("refresh failed")
 	}
 
-	return c.JSON(authResponse{
-		Token:        session.AccessToken,
-		RefreshToken: session.RefreshToken,
-		TokenType:    session.TokenType,
-		ExpiresIn:    session.ExpiresIn,
-		ExpiresAt:    session.ExpiresAt,
-		User:         session.User,
-	})
+	session.SID = current.SID
+	if err := h.setAppSession(c, session, current.LoginSource); err != nil {
+		return apperror.Internal("failed to rotate application session")
+	}
+	return c.JSON(authResponse{User: session.User})
 }
 
 func (h *AuthHandler) Logout(c *fiber.Ctx) error {
-	header := strings.TrimSpace(c.Get("Authorization"))
-
-	if header == "" {
-		return apperror.New(
-			fiber.StatusUnauthorized,
-			"INVALID_TOKEN",
-			"access token is required",
-		)
+	session, ok := middleware.AppSessionFromCtx(c)
+	if !ok {
+		return apperror.Unauthorized("application session is unavailable")
 	}
-
-	parts := strings.Fields(header)
-
-	if len(parts) != 2 ||
-		!strings.EqualFold(parts[0], "Bearer") ||
-		strings.TrimSpace(parts[1]) == "" {
-
-		return apperror.New(
-			fiber.StatusUnauthorized,
-			"INVALID_TOKEN",
-			"invalid access token format",
-		)
+	if session.LoginSource == models.LoginSourceSSO {
+		// Preserve the app cookie and upstream session until Central confirms.
+		// Cancel returns through /login and validates the same SID; Confirm
+		// revokes it and the next /me or refresh clears the invalid app cookie.
+		c.Set(fiber.HeaderCacheControl, "no-store")
+		return c.JSON(fiber.Map{"centralLogoutRequired": true})
 	}
+	defer h.appSessions.Clear(c)
 
-	if err := h.auth.Logout(c.Context(), parts[1]); err != nil {
+	result, err := h.auth.Logout(
+		c.Context(),
+		session.AccessToken,
+		session.LoginSource,
+	)
+	if err != nil {
 		if ae, ok := err.(*services.AuthError); ok {
 			return apperror.New(
 				ae.StatusCode,
@@ -158,7 +208,23 @@ func (h *AuthHandler) Logout(c *fiber.Ctx) error {
 	}
 
 	middleware.InvalidateCentralSSOAuthCache()
-	return c.SendStatus(fiber.StatusNoContent)
+	return c.JSON(fiber.Map{
+		"centralLogoutRequired": result.CentralLogoutRequired,
+	})
+}
+
+func (h *AuthHandler) setAppSession(c *fiber.Ctx, session *services.AuthSession, source models.LoginSource) error {
+	if h.appSessions == nil || session == nil || session.User == nil {
+		return services.ErrInvalidAppSession
+	}
+	sid := ""
+	if source == models.LoginSourceSSO {
+		sid = strings.TrimSpace(session.SID)
+	}
+	return h.appSessions.Set(c, services.AppSessionData{
+		AppUserID: session.User.ID, Role: session.User.Role, Status: session.User.Status,
+		LoginSource: source, SID: sid, AccessToken: session.AccessToken, RefreshToken: session.RefreshToken,
+	})
 }
 
 func (h *AuthHandler) Register(c *fiber.Ctx) error {
@@ -233,8 +299,11 @@ func (h *AuthHandler) RequestAccess(c *fiber.Ctx) error {
 	}
 
 	return c.Status(status).JSON(fiber.Map{
-		"message": message,
-		"user":    result.User,
+		"message":     message,
+		"user":        result.User,
+		"application": result.Application,
+		"status":      result.Status,
+		"created":     result.Created,
 	})
 }
 

@@ -19,6 +19,7 @@ type centralSSOUser struct {
 }
 
 type centralSSOSession struct {
+	SID          string         `json:"sid"`
 	AccessToken  string         `json:"accessToken"`
 	RefreshToken string         `json:"refreshToken"`
 	TokenType    string         `json:"tokenType"`
@@ -31,14 +32,26 @@ type centralSSORegistration struct {
 	User centralSSOUser `json:"user"`
 }
 
+type centralSSOAccessRequest struct {
+	Message     string `json:"message"`
+	Application string `json:"application"`
+	Status      string `json:"status"`
+	Created     bool   `json:"created"`
+}
+
 type centralSSOError struct {
 	Error   string `json:"error"`
 	Message string `json:"message"`
 }
 
+type centralSSOIntrospection struct {
+	Active bool `json:"active"`
+}
+
 // AuthSession is the session shape SILAPET needs from Central SSO.
 // User authorization is always resolved locally from SILAPET membership.
 type AuthSession struct {
+	SID          string
 	AccessToken  string
 	RefreshToken string
 	TokenType    string
@@ -158,6 +171,9 @@ func mapCentralSSOError(
 	case "account_rejected":
 		localCode = "ACCOUNT_REJECTED"
 
+	case "account_disabled":
+		localCode = "ACCOUNT_DISABLED"
+
 	case "account_already_exists":
 		localCode = "ACCOUNT_ALREADY_EXISTS"
 
@@ -178,6 +194,15 @@ func mapCentralSSOError(
 
 	case "unsupported_application":
 		localCode = "UNSUPPORTED_APPLICATION"
+
+	case "application_unavailable":
+		localCode = "APPLICATION_UNAVAILABLE"
+
+	case "application_access_exists":
+		localCode = "APPLICATION_ACCESS_EXISTS"
+
+	case "application_access_blocked":
+		localCode = "APPLICATION_ACCESS_BLOCKED"
 	}
 
 	if localCode == "" {
@@ -259,6 +284,99 @@ func (s *AuthService) centralLogin(
 	}
 
 	return &session, nil
+}
+
+func (s *AuthService) centralBrowserSSOExchange(
+	ctx context.Context,
+	code string,
+	codeVerifier string,
+) (*centralSSOSession, error) {
+	var session centralSSOSession
+	err := s.centralSSORequest(
+		ctx,
+		http.MethodPost,
+		"/api/v1/auth/sso/exchange",
+		map[string]string{
+			"code":         code,
+			"clientId":     s.cfg.SSOClientID,
+			"redirectUri":  s.cfg.SSORedirectURI,
+			"codeVerifier": codeVerifier,
+		},
+		"",
+		&session,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &session, nil
+}
+
+func (s *AuthService) IntrospectBrowserSSO(
+	ctx context.Context,
+	sid string,
+	appUserID string,
+) (bool, error) {
+	sid = strings.TrimSpace(sid)
+	appUserID = strings.TrimSpace(appUserID)
+	secret := strings.TrimSpace(s.cfg.SSOIntrospectionSecret)
+	clientID := strings.TrimSpace(s.cfg.SSOClientID)
+	if sid == "" || appUserID == "" || clientID == "" || len(secret) < 32 {
+		return false, nil
+	}
+
+	var result centralSSOIntrospection
+	err := s.centralSSORequest(
+		ctx,
+		http.MethodPost,
+		"/api/v1/auth/sso/introspect",
+		map[string]string{
+			"clientId":  clientID,
+			"sid":       sid,
+			"appUserId": appUserID,
+		},
+		secret,
+		&result,
+	)
+	if err != nil {
+		return false, err
+	}
+	return result.Active, nil
+}
+
+func (s *AuthService) centralRequestAccess(
+	ctx context.Context,
+	email string,
+	password string,
+) (*centralSSOAccessRequest, error) {
+	var response centralSSOAccessRequest
+
+	err := s.centralSSORequest(
+		ctx,
+		http.MethodPost,
+		"/api/v1/auth/request-access",
+		map[string]string{
+			"email":       strings.TrimSpace(email),
+			"password":    password,
+			"application": models.ApplicationCodeSilapet,
+		},
+		"",
+		&response,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	if response.Application != models.ApplicationCodeSilapet ||
+		response.Status != models.UserStatusPending {
+
+		return nil, &AuthError{
+			StatusCode: http.StatusBadGateway,
+			Code:       "INVALID_SSO_RESPONSE",
+			Message:    "central access request returned an invalid result",
+		}
+	}
+
+	return &response, nil
 }
 
 func (s *AuthService) centralRefresh(

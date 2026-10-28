@@ -8,17 +8,47 @@ import (
 
 	"office-craft-api/internal/config"
 	"office-craft-api/internal/models"
-	"office-craft-api/internal/repository"
 )
 
-type AuthService struct {
-	cfg    *config.Config
-	users  *repository.UserRepository
-	client *http.Client
-	notify *NotifyService
+type AuthUserStore interface {
+	GetByID(
+		ctx context.Context,
+		id string,
+	) (*models.AppUser, error)
+	GetByEmail(
+		ctx context.Context,
+		email string,
+	) (*models.AppUser, error)
+	UpdatePhone(
+		ctx context.Context,
+		id string,
+		phone string,
+	) (*models.AppUser, error)
 }
 
-func NewAuthService(cfg *config.Config, users *repository.UserRepository, notify *NotifyService) *AuthService {
+type AuthNotifier interface {
+	NotifyAdminsForUserEvent(
+		ctx context.Context,
+		user models.AppUser,
+		kind string,
+		note string,
+	)
+	NotifyRegistrationReceived(user models.AppUser)
+}
+
+type AuthService struct {
+	cfg      *config.Config
+	users    AuthUserStore
+	client   *http.Client
+	notify   AuthNotifier
+	ssoFlows BrowserSSOFlowStore
+}
+
+func NewAuthService(
+	cfg *config.Config,
+	users AuthUserStore,
+	notify AuthNotifier,
+) *AuthService {
 	return &AuthService{
 		cfg:    cfg,
 		users:  users,
@@ -92,22 +122,33 @@ func (s *AuthService) Refresh(
 	return result, nil
 }
 
-// Logout delegates session invalidation to Central SSO.
+type LogoutResult struct {
+	CentralLogoutRequired bool
+}
+
+// Logout delegates application-session invalidation to Central SSO and tells
+// the caller whether the verified session originated from Browser SSO.
 func (s *AuthService) Logout(
 	ctx context.Context,
 	accessToken string,
-) error {
+	loginSource models.LoginSource,
+) (*LogoutResult, error) {
 	accessToken = strings.TrimSpace(accessToken)
 
 	if accessToken == "" {
-		return &AuthError{
+		return nil, &AuthError{
 			StatusCode: http.StatusUnauthorized,
 			Code:       "INVALID_TOKEN",
 			Message:    "access token is required",
 		}
 	}
 
-	return s.centralLogout(ctx, accessToken)
+	if err := s.centralLogout(ctx, accessToken); err != nil {
+		return nil, err
+	}
+	return &LogoutResult{
+		CentralLogoutRequired: loginSource == models.LoginSourceSSO,
+	}, nil
 }
 
 // discardCentralSession best-effort revokes a Central SSO session that
@@ -154,6 +195,7 @@ func (s *AuthService) buildSilapetSession(
 	}
 
 	return &AuthSession{
+		SID:          session.SID,
 		AccessToken:  session.AccessToken,
 		RefreshToken: session.RefreshToken,
 		TokenType:    session.TokenType,
@@ -214,8 +256,9 @@ func (s *AuthService) authorizeSilapetUser(
 	}
 }
 
-// Register creates a Central Balai identity through Central SSO, then creates
-// only the SILAPET membership. SILAPET never owns or stores credentials here.
+// Register delegates identity and initial SILAPET membership creation to
+// Central SSO. SILAPET only reloads the resulting projection and dispatches
+// its business notifications; it never creates credentials or membership.
 func (s *AuthService) Register(
 	ctx context.Context,
 	email string,
@@ -234,103 +277,73 @@ func (s *AuthService) Register(
 		return nil, err
 	}
 
-	user, created, err := s.users.CreateMembership(
-		ctx,
-		centralUser.ID,
-		models.RoleUser,
-		models.UserStatusPending,
-	)
+	user, err := s.users.GetByID(ctx, centralUser.ID)
 	if err != nil {
 		return nil, err
 	}
-
-	if created {
-		s.fireAdminNotify(*user, "registered", "")
-		go s.notify.NotifyRegistrationReceived(*user)
+	if user == nil {
+		return nil, &AuthError{
+			StatusCode: http.StatusBadGateway,
+			Code:       "INVALID_SSO_RESPONSE",
+			Message:    "central registration membership is unavailable",
+		}
 	}
+
+	s.fireRegistrationNotifications(*user)
 
 	return user, nil
 }
 
 type AccessRequestResult struct {
-	User    *models.AppUser
-	Created bool
+	User        *models.AppUser
+	Application string
+	Status      string
+	Created     bool
 }
 
-// RequestAccess verifies an existing Akun Balai through Central SSO and then
-// creates only a pending SILAPET membership.
-//
-// The temporary Central SSO session is discarded because this endpoint proves
-// identity ownership; it is not a SILAPET login.
+// RequestAccess delegates password verification, identity mapping, and the
+// complete membership state machine to Central SSO. SILAPET only reloads the
+// resulting read model for its compatible response and business notification.
 func (s *AuthService) RequestAccess(
 	ctx context.Context,
 	email string,
 	password string,
 ) (*AccessRequestResult, error) {
-	session, err := s.centralLogin(
+	email = strings.ToLower(strings.TrimSpace(email))
+
+	accessRequest, err := s.centralRequestAccess(
 		ctx,
-		strings.TrimSpace(email),
+		email,
 		password,
 	)
 	if err != nil {
 		return nil, err
 	}
 
-	defer s.discardCentralSession(session)
-
-	if session == nil ||
-		strings.TrimSpace(session.User.ID) == "" {
-
-		return nil, &AuthError{
-			StatusCode: http.StatusBadGateway,
-			Code:       "INVALID_SSO_RESPONSE",
-			Message:    "central authentication returned an invalid identity",
-		}
-	}
-
-	user, created, err := s.users.CreateMembership(
+	user, err := s.users.GetByEmail(
 		ctx,
-		session.User.ID,
-		models.RoleUser,
-		models.UserStatusPending,
+		email,
 	)
 	if err != nil {
 		return nil, err
 	}
-
-	if !created {
-		switch user.Status {
-		case models.UserStatusApproved:
-			return nil, &AuthError{
-				StatusCode: http.StatusConflict,
-				Code:       "APPLICATION_ACCESS_EXISTS",
-				Message:    "your account already has access to SILAPET",
-			}
-
-		case models.UserStatusRejected:
-			return nil, &AuthError{
-				StatusCode: http.StatusConflict,
-				Code:       "APPLICATION_ACCESS_REJECTED",
-				Message:    "your previous SILAPET access request was rejected",
-			}
-
-		case models.UserStatusDisabled:
-			return nil, &AuthError{
-				StatusCode: http.StatusConflict,
-				Code:       "APPLICATION_ACCESS_DISABLED",
-				Message:    "your SILAPET access is disabled",
-			}
+	if user == nil {
+		return nil, &AuthError{
+			StatusCode: http.StatusBadGateway,
+			Code:       "INVALID_SSO_RESPONSE",
+			Message:    "central access request membership is unavailable",
 		}
 	}
 
-	if created {
-		s.fireAdminNotify(*user, "registered", "")
-		go s.notify.NotifyRegistrationReceived(*user)
+	if accessRequest.Created {
+		s.fireRegistrationNotifications(*user)
 	}
 
 	return &AccessRequestResult{
-		User:    user,
-		Created: created,
+		User:        user,
+		Application: accessRequest.Application,
+		Status:      accessRequest.Status,
+		Created:     accessRequest.Created,
 	}, nil
 }
 
@@ -385,9 +398,16 @@ func (s *AuthService) ChangePhoneNumber(ctx context.Context, user *models.AppUse
 	return err
 }
 
-// fireAdminNotify is fireNotify's counterpart for the admin-facing
-// direction (new request / started / finished) - same background-goroutine
-// rationale, different recipient set.
-func (s *AuthService) fireAdminNotify(user models.AppUser, kind, note string) {
-	go s.notify.NotifyAdminsForUserEvent(context.Background(), user, kind, note)
+func (s *AuthService) fireRegistrationNotifications(user models.AppUser) {
+	if s.notify == nil {
+		return
+	}
+
+	go s.notify.NotifyAdminsForUserEvent(
+		context.Background(),
+		user,
+		"registered",
+		"",
+	)
+	go s.notify.NotifyRegistrationReceived(user)
 }

@@ -12,8 +12,9 @@ import (
 )
 
 // Setup wires repositories -> services -> handlers -> routes onto the fiber app.
-func Setup(app *fiber.App, cfg *config.Config, pool *pgxpool.Pool) {
+func Setup(app *fiber.App, cfg *config.Config, pool *pgxpool.Pool, appSessions *services.AppSessionManager) {
 	userRepo := repository.NewUserRepository(pool)
+	ssoFlowRepo := repository.NewBrowserSSOFlowRepository(pool)
 	resourceRepo := repository.NewResourceRepository(pool)
 	bookingRepo := repository.NewBookingRepository(pool)
 	proofRepo := repository.NewProofRepository(pool)
@@ -23,11 +24,12 @@ func Setup(app *fiber.App, cfg *config.Config, pool *pgxpool.Pool) {
 	whatsappSvc := services.NewWhatsAppService(cfg)
 	notifySvc := services.NewNotifyService(bookingRepo, userRepo, resourceRepo, emailSvc, whatsappSvc)
 	authSvc := services.NewAuthService(cfg, userRepo, notifySvc)
+	authSvc.SetBrowserSSOFlowStore(ssoFlowRepo)
 	bookingSvc := services.NewBookingService(bookingRepo, resourceRepo, userRepo, proofRepo, eventRepo, notifySvc)
 	proofSvc := services.NewProofService(bookingRepo)
 	reportSvc := services.NewReportService(bookingRepo, resourceRepo, userRepo)
 
-	authHandler := handlers.NewAuthHandler(authSvc, userRepo)
+	authHandler := handlers.NewAuthHandler(authSvc, userRepo, appSessions)
 	resourceHandler := handlers.NewResourceHandler(resourceRepo)
 	bookingHandler := handlers.NewBookingHandler(bookingRepo, resourceRepo, userRepo, proofRepo, eventRepo, bookingSvc)
 	proofHandler := handlers.NewProofHandler(proofRepo, bookingRepo, proofSvc)
@@ -38,7 +40,9 @@ func Setup(app *fiber.App, cfg *config.Config, pool *pgxpool.Pool) {
 	userHandler := handlers.NewUserHandler(userRepo, notifySvc)
 	reportHandler := handlers.NewReportHandler(reportSvc)
 
-	requireAuth := middleware.RequireAuth(pool, cfg.SSOBaseURL)
+	tokenVerifier := middleware.NewTokenVerifier(cfg.SupabaseURL)
+	requireAuth := middleware.RequireAuth(tokenVerifier, userRepo)
+	requireSession := middleware.RequireAppSession(appSessions, authSvc)
 	requireAdmin := middleware.RequireAdmin()
 
 	api := app.Group("/api")
@@ -50,15 +54,18 @@ func Setup(app *fiber.App, cfg *config.Config, pool *pgxpool.Pool) {
 	// -------- Auth --------
 	auth := api.Group("/auth")
 	auth.Post("/login", authHandler.Login)
+	auth.Get("/sso/start", authHandler.SSOStart)
+	auth.Get("/sso/logout", authHandler.SSOLogoutStart)
+	auth.Post("/sso/exchange", authHandler.SSOExchange)
 	auth.Post("/register", authHandler.Register)
 	auth.Post("/request-access", authHandler.RequestAccess)
 	auth.Post("/forgot-password", authHandler.ForgotPassword)
 	auth.Post("/reset-password", authHandler.ResetPassword)
 	auth.Post("/refresh", authHandler.Refresh)
-	auth.Post("/logout", authHandler.Logout)
-	auth.Get("/me", requireAuth, authHandler.Me)
-	auth.Put("/password", requireAuth, authHandler.ChangePassword)
-	auth.Put("/phone", requireAuth, authHandler.ChangePhoneNumber)
+	auth.Post("/logout", requireSession, authHandler.Logout)
+	auth.Get("/me", requireSession, requireAuth, authHandler.Me)
+	auth.Put("/password", requireSession, requireAuth, authHandler.ChangePassword)
+	auth.Put("/phone", requireSession, requireAuth, authHandler.ChangePhoneNumber)
 
 	// -------- Public (no auth) --------
 	public := api.Group("/public")
@@ -68,16 +75,16 @@ func Setup(app *fiber.App, cfg *config.Config, pool *pgxpool.Pool) {
 	// -------- Resources --------
 	resources := api.Group("/resources")
 	resources.Get("/", resourceHandler.List)
-	resources.Get("/:id", requireAuth, resourceHandler.Get)
-	resources.Post("/photos/upload", requireAuth, requireAdmin, storageHandler.UploadResourcePhoto)
-	resources.Post("/", requireAuth, requireAdmin, resourceHandler.Create)
-	resources.Put("/:id", requireAuth, requireAdmin, resourceHandler.Update)
-	resources.Delete("/:id", requireAuth, requireAdmin, resourceHandler.Delete)
+	resources.Get("/:id", requireSession, requireAuth, resourceHandler.Get)
+	resources.Post("/photos/upload", requireSession, requireAuth, requireAdmin, storageHandler.UploadResourcePhoto)
+	resources.Post("/", requireSession, requireAuth, requireAdmin, resourceHandler.Create)
+	resources.Put("/:id", requireSession, requireAuth, requireAdmin, resourceHandler.Update)
+	resources.Delete("/:id", requireSession, requireAuth, requireAdmin, resourceHandler.Delete)
 
 	// -------- Bookings --------
 	// Lifecycle: pending -> approved -> in_use -> finished -> closed, with
 	// rejected/cancelled as terminal off-ramps and needs_revision as a revision state.
-	bookings := api.Group("/bookings", requireAuth)
+	bookings := api.Group("/bookings", requireSession, requireAuth)
 	bookings.Get("/", bookingHandler.List)
 	bookings.Get("/:id", bookingHandler.Get)
 	bookings.Post("/", bookingHandler.Create)
@@ -99,17 +106,17 @@ func Setup(app *fiber.App, cfg *config.Config, pool *pgxpool.Pool) {
 	bookings.Get("/:bookingId/proofs/signed", storageHandler.ListProofsSigned)
 
 	// -------- Stats --------
-	stats := api.Group("/stats", requireAuth, requireAdmin)
+	stats := api.Group("/stats", requireSession, requireAuth, requireAdmin)
 	stats.Get("/overview", statsHandler.Overview)
 
 	// -------- Users (admin: approve/reject registrations) --------
-	users := api.Group("/users", requireAuth, requireAdmin)
+	users := api.Group("/users", requireSession, requireAuth, requireAdmin)
 	users.Get("/", userHandler.List)
 	users.Post("/:id/approve", userHandler.Approve)
 	users.Post("/:id/reject", userHandler.Reject)
 
 	// -------- Reports (admin: date-range export & insights) --------
-	reports := api.Group("/reports", requireAuth, requireAdmin)
+	reports := api.Group("/reports", requireSession, requireAuth, requireAdmin)
 	reports.Get("/bookings/export", reportHandler.Export)
 	reports.Get("/bookings/insights", reportHandler.Insights)
 }

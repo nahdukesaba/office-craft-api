@@ -8,7 +8,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"time"
 
 	"office-craft-api/internal/config"
 	"office-craft-api/internal/models"
@@ -16,30 +15,24 @@ import (
 )
 
 type SeedService struct {
-	cfg       *config.Config
-	users     *repository.UserRepository
-	resources *repository.ResourceRepository
-	client    *http.Client
+	resources resourceSeedStore
 }
 
-func NewSeedService(cfg *config.Config, users *repository.UserRepository, resources *repository.ResourceRepository) *SeedService {
-	return &SeedService{cfg: cfg, users: users, resources: resources, client: &http.Client{Timeout: 15 * time.Second}}
+type resourceSeedStore interface {
+	Count(ctx context.Context) (int64, error)
+	Create(
+		ctx context.Context,
+		input models.ResourceInput,
+	) (*models.Resource, error)
 }
 
-// Run seeds an initial admin account (via the Supabase Admin API, so it
-// requires SUPABASE_SERVICE_ROLE_KEY) and a handful of sample resources,
-// but only if the respective tables are currently empty. Safe to call on
-// every startup.
+func NewSeedService(resources resourceSeedStore) *SeedService {
+	return &SeedService{resources: resources}
+}
+
+// Run seeds business resources only. Central SSO is the exclusive runtime
+// owner for creating Supabase Auth identities and Central SSO profiles.
 func (s *SeedService) Run(ctx context.Context) {
-	userCount, err := s.users.Count(ctx)
-	if err != nil {
-		log.Printf("seed: failed to count users: %v", err)
-	} else if userCount == 0 {
-		if err := s.seedAdmin(ctx); err != nil {
-			log.Printf("seed: failed to seed admin user: %v", err)
-		}
-	}
-
 	resourceCount, err := s.resources.Count(ctx)
 	if err != nil {
 		log.Printf("seed: failed to count resources: %v", err)
@@ -50,7 +43,15 @@ func (s *SeedService) Run(ctx context.Context) {
 	}
 }
 
-func (s *SeedService) seedAdmin(ctx context.Context) error {
+// LegacyAuthSeedService preserves the previous bootstrap implementation for
+// migration reference. It is deliberately not constructed by normal startup.
+type LegacyAuthSeedService struct {
+	cfg    *config.Config
+	users  *repository.UserRepository
+	client *http.Client
+}
+
+func (s *LegacyAuthSeedService) seedAdmin(ctx context.Context) error {
 	if s.cfg.SupabaseServiceKey == "" {
 		log.Println("seed: SUPABASE_SERVICE_ROLE_KEY not set, skipping admin auto-creation")
 		return nil
