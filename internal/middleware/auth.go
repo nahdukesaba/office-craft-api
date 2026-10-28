@@ -19,8 +19,8 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 
-  "office-craft-api/internal/models"
 	"office-craft-api/internal/apperror"
+	"office-craft-api/internal/models"
 )
 
 const (
