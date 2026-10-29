@@ -1,17 +1,10 @@
 package services
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
-	"fmt"
-	"io"
 	"log"
-	"net/http"
 
-	"office-craft-api/internal/config"
 	"office-craft-api/internal/models"
-	"office-craft-api/internal/repository"
 )
 
 type SeedService struct {
@@ -41,66 +34,6 @@ func (s *SeedService) Run(ctx context.Context) {
 			log.Printf("seed: failed to seed resources: %v", err)
 		}
 	}
-}
-
-// LegacyAuthSeedService preserves the previous bootstrap implementation for
-// migration reference. It is deliberately not constructed by normal startup.
-type LegacyAuthSeedService struct {
-	cfg    *config.Config
-	users  *repository.UserRepository
-	client *http.Client
-}
-
-func (s *LegacyAuthSeedService) seedAdmin(ctx context.Context) error {
-	if s.cfg.SupabaseServiceKey == "" {
-		log.Println("seed: SUPABASE_SERVICE_ROLE_KEY not set, skipping admin auto-creation")
-		return nil
-	}
-
-	payload := map[string]interface{}{
-		"email":         s.cfg.SeedAdminEmail,
-		"password":      s.cfg.SeedAdminPassword,
-		"email_confirm": true,
-	}
-	body, _ := json.Marshal(payload)
-
-	url := fmt.Sprintf("%s/auth/v1/admin/users", s.cfg.SupabaseURL)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("apikey", s.cfg.SupabaseServiceKey)
-	req.Header.Set("Authorization", "Bearer "+s.cfg.SupabaseServiceKey)
-
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
-
-	if resp.StatusCode >= 400 {
-		return fmt.Errorf("supabase admin API returned %d: %s", resp.StatusCode, string(raw))
-	}
-
-	var created struct {
-		ID    string `json:"id"`
-		Email string `json:"email"`
-	}
-	if err := json.Unmarshal(raw, &created); err != nil {
-		return err
-	}
-	if created.ID == "" {
-		return fmt.Errorf("supabase admin API did not return a user id: %s", string(raw))
-	}
-
-	if _, err := s.users.Upsert(ctx, created.ID, created.Email, s.cfg.SeedAdminFullName, nil, models.RoleAdmin, models.UserStatusApproved); err != nil {
-		return err
-	}
-
-	log.Printf("seed: created initial admin user %s (change the password after first login)", created.Email)
-	return nil
 }
 
 func (s *SeedService) seedResources(ctx context.Context) error {

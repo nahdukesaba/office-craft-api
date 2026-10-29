@@ -23,30 +23,6 @@ func NewPublicHandler(bookings *repository.BookingRepository, resources *reposit
 	return &PublicHandler{bookings: bookings, resources: resources, users: users}
 }
 
-type publicBooking struct {
-	ID         string  `json:"id"`
-	ResourceID string  `json:"resourceId"`
-	PhotoURL   *string `json:"photoUrl"`
-	StartTime  string  `json:"startTime"`
-	EndTime    string  `json:"endTime"`
-	Status     string  `json:"status"`
-}
-
-func toPublicBookings(items []models.Booking, photoURL *string) []publicBooking {
-	out := make([]publicBooking, 0, len(items))
-	for _, b := range items {
-		out = append(out, publicBooking{
-			ID:         b.ID,
-			ResourceID: b.ResourceID,
-			StartTime:  b.StartTime.Format("2006-01-02T15:04:05Z07:00"),
-			EndTime:    b.EndTime.Format("2006-01-02T15:04:05Z07:00"),
-			Status:     b.Status,
-			PhotoURL:   photoURL,
-		})
-	}
-	return out
-}
-
 func (h *PublicHandler) AllBookings(c *fiber.Ctx) error {
 	month := c.Query("month", "0")
 	monthInt, _ := strconv.Atoi(month)

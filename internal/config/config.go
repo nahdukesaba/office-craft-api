@@ -18,9 +18,7 @@ type Config struct {
 	DatabaseURL                    string
 	MigrationsPath                 string
 	SupabaseURL                    string
-	SupabaseAnonKey                string
 	SupabaseServiceKey             string
-	SupabaseJWTSecret              string
 	SSOBaseURL                     string
 	SSOClientID                    string
 	SSORedirectURI                 string
@@ -33,9 +31,6 @@ type Config struct {
 	AppSessionCookieSecure         bool
 	SupabaseStorageBucketResources string
 	SupabaseStorageBucketProofs    string
-	SeedAdminEmail                 string
-	SeedAdminPassword              string
-	SeedAdminFullName              string
 	AllowedOrigins                 string
 
 	// Email notifications (optional - if SMTPHost is empty, EmailNotifier
@@ -67,9 +62,7 @@ func Load() *Config {
 		DatabaseURL:                    getEnv("DATABASE_URL", ""),
 		MigrationsPath:                 getEnv("MIGRATIONS_PATH", "migrations"),
 		SupabaseURL:                    getEnv("SUPABASE_URL", ""),
-		SupabaseAnonKey:                getEnv("SUPABASE_ANON_KEY", ""),
 		SupabaseServiceKey:             getEnv("SUPABASE_SERVICE_ROLE_KEY", ""),
-		SupabaseJWTSecret:              getEnv("SUPABASE_JWT_SECRET", ""),
 		SSOBaseURL:                     getEnv("SSO_BASE_URL", "http://127.0.0.1:8082"),
 		SSOClientID:                    getEnv("SSO_CLIENT_ID", "silapet-web"),
 		SSORedirectURI:                 getEnv("SSO_REDIRECT_URI", "http://localhost:8081/auth/sso/callback"),
@@ -82,9 +75,6 @@ func Load() *Config {
 		AppSessionCookieSecure:         getEnvBool("APP_SESSION_COOKIE_SECURE", true),
 		SupabaseStorageBucketResources: getEnv("SUPABASE_STORAGE_BUCKET_RESOURCES", "resource-photos"),
 		SupabaseStorageBucketProofs:    getEnv("SUPABASE_STORAGE_BUCKET_PROOFS", "booking-proofs"),
-		SeedAdminEmail:                 getEnv("SEED_ADMIN_EMAIL", "admin@office-craft.local"),
-		SeedAdminPassword:              getEnv("SEED_ADMIN_PASSWORD", "ChangeMe123!"),
-		SeedAdminFullName:              getEnv("SEED_ADMIN_FULL_NAME", "System Administrator"),
 		AllowedOrigins:                 getEnv("ALLOWED_ORIGINS", DefaultAllowedOrigins),
 
 		SMTPHost:      getEnv("SMTP_HOST", ""),
