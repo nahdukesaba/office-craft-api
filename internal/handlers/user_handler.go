@@ -43,8 +43,8 @@ func (h *UserHandler) Approve(c *fiber.Ctx) error {
 	if user == nil {
 		return apperror.NotFound("USER_NOT_FOUND", "user not found")
 	}
-	if user.Status != models.UserStatusPending {
-		return apperror.BadRequest("INVALID_STATUS", "user status must be pending to approve")
+	if !canTransitionUserStatus(user.Status, models.UserStatusApproved) {
+		return apperror.BadRequest("INVALID_STATUS", "user status must be pending or rejected to approve")
 	}
 	return h.setStatus(c, models.UserStatusApproved)
 }
@@ -57,10 +57,21 @@ func (h *UserHandler) Reject(c *fiber.Ctx) error {
 	if user == nil {
 		return apperror.NotFound("USER_NOT_FOUND", "user not found")
 	}
-	if user.Status != models.UserStatusPending {
-		return apperror.BadRequest("INVALID_STATUS", "user status must be pending to reject")
+	if !canTransitionUserStatus(user.Status, models.UserStatusRejected) {
+		return apperror.BadRequest("INVALID_STATUS", "user status must be pending or approved to reject")
 	}
 	return h.setStatus(c, models.UserStatusRejected)
+}
+
+func canTransitionUserStatus(current, target string) bool {
+	switch target {
+	case models.UserStatusApproved:
+		return current == models.UserStatusPending || current == models.UserStatusRejected
+	case models.UserStatusRejected:
+		return current == models.UserStatusPending || current == models.UserStatusApproved
+	default:
+		return false
+	}
 }
 
 func (h *UserHandler) setStatus(c *fiber.Ctx, status string) error {

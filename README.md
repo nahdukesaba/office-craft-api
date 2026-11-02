@@ -58,8 +58,14 @@ All routes are under `/api`.
 | Proofs | `GET/POST /bookings/:bookingId/proofs` |
 | Public | `GET /public/bookings/all`, `GET /public/bookings/resource/:resourceId` |
 | Stats | `GET /stats/overview` |
+| Users | `GET /users`, `POST /users/:id/approve`, `POST /users/:id/reject` |
 
 Booking ownership is always derived from the trusted application session and is never accepted from request-body `userId` values.
+
+User moderation follows the SILAPET membership lifecycle: pending memberships
+may be approved or rejected, approved memberships may be rejected to revoke
+access, and rejected memberships may be approved again. Disabled memberships
+cannot be changed through these moderation actions.
 
 ## Verification
 
