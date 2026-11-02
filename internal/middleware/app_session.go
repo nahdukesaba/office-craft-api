@@ -16,6 +16,16 @@ type centralSSOSessionIntrospector interface {
 	IntrospectBrowserSSO(context.Context, string, string) (bool, error)
 }
 
+// AppSessionCookieOrNoContent lets /auth/me act as a quiet session probe for
+// signed-out browsers. A present cookie still flows through the full session,
+// SSO introspection, token, and membership validation chain.
+func AppSessionCookieOrNoContent(c *fiber.Ctx) error {
+	if c.Cookies(services.AppSessionCookieName) == "" {
+		return c.SendStatus(fiber.StatusNoContent)
+	}
+	return c.Next()
+}
+
 func RequireAppSession(
 	manager *services.AppSessionManager,
 	introspectors ...centralSSOSessionIntrospector,

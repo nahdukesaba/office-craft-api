@@ -60,6 +60,25 @@ func testSessionCookie(t *testing.T, manager *services.AppSessionManager, source
 	return &http.Cookie{Name: services.AppSessionCookieName, Value: value}
 }
 
+func TestAppSessionCookieOrNoContentSkipsOnlySignedOutBrowsers(t *testing.T) {
+	app := fiber.New()
+	app.Get("/auth/me", AppSessionCookieOrNoContent, func(c *fiber.Ctx) error {
+		return c.SendStatus(http.StatusTeapot)
+	})
+
+	signedOutResponse, err := app.Test(httptest.NewRequest(http.MethodGet, "/auth/me", nil))
+	if err != nil || signedOutResponse.StatusCode != http.StatusNoContent {
+		t.Fatalf("signed-out session probe returned status=%d err=%v", signedOutResponse.StatusCode, err)
+	}
+
+	withCookie := httptest.NewRequest(http.MethodGet, "/auth/me", nil)
+	withCookie.AddCookie(&http.Cookie{Name: services.AppSessionCookieName, Value: "invalid-but-present"})
+	withCookieResponse, err := app.Test(withCookie)
+	if err != nil || withCookieResponse.StatusCode != http.StatusTeapot {
+		t.Fatalf("present session cookie bypassed validation chain: status=%d err=%v", withCookieResponse.StatusCode, err)
+	}
+}
+
 func TestRequireAppSessionIntrospectsOnlySSOSessions(t *testing.T) {
 	manager := testMiddlewareSessionManager(t)
 	introspector := &fakeCentralSessionIntrospector{active: true}

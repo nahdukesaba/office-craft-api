@@ -31,7 +31,11 @@ Body: `{ "email": string, "password": string, "fullName": string, "phone"?: stri
 `phone` is optional but needed if you want this user to receive WhatsApp notifications later — format as digits only, international format, no `+` or leading `0` (e.g. Indonesian `0812-3456-7890` → `"6281234567890"`). Worth adding a phone input to your signup form with a hint about this format, or a "add later" affordance, since there's no profile-edit endpoint yet to set it after the fact.
 Response `201`: `{ "message": string, "user": AppUser }` — **no token is ever returned here**, regardless of Supabase's own email-confirmation setting. `user.status` will be `"pending"`. Show the user a "your account is awaiting admin approval" screen immediately after registering; do not attempt to auto-login.
 
-### `GET /auth/me` (auth required)
+### `GET /auth/me` (session probe)
+
+Returns the current user for a valid application session, `204 No Content`
+when no `silapet-session` cookie exists, and `401` when a present session fails
+validation.
 Response `200`: `AppUser`
 
 ```ts

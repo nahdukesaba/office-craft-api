@@ -63,7 +63,7 @@ func Setup(app *fiber.App, cfg *config.Config, pool *pgxpool.Pool, appSessions *
 	auth.Post("/reset-password", authHandler.ResetPassword)
 	auth.Post("/refresh", authHandler.Refresh)
 	auth.Post("/logout", requireSession, authHandler.Logout)
-	auth.Get("/me", requireSession, requireAuth, authHandler.Me)
+	auth.Get("/me", middleware.AppSessionCookieOrNoContent, requireSession, requireAuth, authHandler.Me)
 	auth.Put("/password", requireSession, requireAuth, authHandler.ChangePassword)
 	auth.Put("/phone", requireSession, requireAuth, authHandler.ChangePhoneNumber)
 

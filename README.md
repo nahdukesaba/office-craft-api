@@ -38,7 +38,7 @@ Health check: `GET /api/health`.
 |---|---|
 | `POST /api/auth/login` | Direct login through Central SSO |
 | `POST /api/auth/register` | Central-owned registration and SILAPET membership request |
-| `GET /api/auth/me` | Reload the current HttpOnly application session |
+| `GET /api/auth/me` | Reload the current HttpOnly application session; returns `204` when no session cookie exists |
 | `POST /api/auth/refresh` | Refresh the server-held Central credentials and application session |
 | `POST /api/auth/logout` | Clear the SILAPET session and report whether Central logout is required |
 | `GET /api/auth/sso/start` | Start Browser SSO with state and PKCE |
