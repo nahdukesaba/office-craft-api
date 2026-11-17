@@ -65,8 +65,8 @@ func scanUser(row pgx.Row) (*models.AppUser, error) {
 // Existing membership authorization is never overwritten by login/register
 // upserts.
 //
-// app_users.role/status are still populated on INSERT for compatibility with
-// the legacy schema, but they are no longer the SILAPET authorization source.
+// app_users.role/status are no longer written here because authorization
+// is owned exclusively by public.app_memberships.
 func (r *UserRepository) Upsert(
 	ctx context.Context,
 	id, email, fullName string,
@@ -103,11 +103,9 @@ func (r *UserRepository) Upsert(
 				id,
 				email,
 				full_name,
-				phone,
-				role,
-				status
+				phone
 			)
-			VALUES ($1, $2, $3, $4, $5, $6)
+			VALUES ($1, $2, $3, $4)
 			ON CONFLICT (id) DO UPDATE
 			SET email = EXCLUDED.email,
 			    full_name = CASE
@@ -125,8 +123,6 @@ func (r *UserRepository) Upsert(
 		email,
 		fullName,
 		phone,
-		role,
-		status,
 	)
 	if err != nil {
 		return nil, err
