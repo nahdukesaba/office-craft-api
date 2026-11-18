@@ -34,6 +34,10 @@ func Setup(app *fiber.App, cfg *config.Config, pool *pgxpool.Pool, appSessions *
 	bookingHandler := handlers.NewBookingHandler(bookingRepo, resourceRepo, userRepo, proofRepo, eventRepo, bookingSvc)
 	proofHandler := handlers.NewProofHandler(proofRepo, bookingRepo, proofSvc)
 	storageHandler := handlers.NewStorageHandler(cfg, bookingRepo, proofRepo, proofSvc)
+	// nil check before SetSharePoint avoids a typed-nil interface.
+	if sp := services.NewSharePointService(cfg, repository.NewGraphTokenRepository(pool)); sp != nil {
+		storageHandler.SetSharePoint(sp)
+	}
 	notifyHandler := handlers.NewNotifyHandler(notifySvc, bookingRepo)
 	publicHandler := handlers.NewPublicHandler(bookingRepo, resourceRepo, userRepo)
 	statsHandler := handlers.NewStatsHandler(bookingRepo, resourceRepo, userRepo)

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -86,6 +87,49 @@ func (s *fakeProofStore) Create(_ context.Context, bookingID, kind, path, upload
 	}
 	s.proofs[bookingID] = append(s.proofs[bookingID], p)
 	return &p, nil
+}
+
+func (s *fakeProofStore) CreateDriveProof(ctx context.Context, bookingID, kind, path, uploadedBy, driveItemID, webURL string) (*models.BookingProof, error) {
+	p, err := s.Create(ctx, bookingID, kind, path, uploadedBy)
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rows := s.proofs[bookingID]
+	rows[len(rows)-1].DriveItemID = &driveItemID
+	rows[len(rows)-1].WebURL = &webURL
+	p.DriveItemID = &driveItemID
+	p.WebURL = &webURL
+	return p, nil
+}
+
+type fakeDriveStorage struct {
+	mu        sync.Mutex
+	uploaded  []string
+	deleted   []string
+	uploadErr error
+}
+
+func (d *fakeDriveStorage) Upload(_ context.Context, path, _ string, _ []byte) (string, string, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.uploadErr != nil {
+		return "", "", d.uploadErr
+	}
+	d.uploaded = append(d.uploaded, path)
+	return fmt.Sprintf("item-%d", len(d.uploaded)), "https://sp.example/" + path, nil
+}
+
+func (d *fakeDriveStorage) Delete(_ context.Context, itemID string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.deleted = append(d.deleted, itemID)
+	return nil
+}
+
+func (d *fakeDriveStorage) DownloadURL(_ context.Context, itemID string) (string, error) {
+	return "https://sp.example/download/" + itemID, nil
 }
 
 func (s *fakeProofStore) ListByBooking(_ context.Context, bookingID string) ([]models.BookingProof, error) {
@@ -713,6 +757,141 @@ func TestStorageHandler_ListProofsSigned_And_LegacyProofSecurity(t *testing.T) {
 	defer respTampered.Body.Close()
 	if respTampered.StatusCode != http.StatusForbidden {
 		t.Fatalf("expected 403 INVALID_PROOF_PATH for tampered stored proof path, got %d", respTampered.StatusCode)
+	}
+}
+
+func TestStorageHandler_SharePointProofUploadCleanupAndList(t *testing.T) {
+	var supabaseUploads int
+	storageServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/storage/v1/object/sign/booking-proofs/") {
+			objPath := strings.TrimPrefix(r.URL.Path, "/storage/v1/object/sign/booking-proofs/")
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"signedURL":"/object/sign/booking-proofs/` + objPath + `?token=ok"}`))
+			return
+		}
+		if r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/storage/v1/object/booking-proofs/") {
+			supabaseUploads++
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer storageServer.Close()
+
+	now := time.Now().UTC()
+	bookings := &fakeBookingFinder{bookings: map[string]*models.Booking{
+		"b-active": {
+			ID:         "b-active",
+			ResourceID: "res-1",
+			UserID:     "owner-1",
+			StartTime:  now.Add(-1 * time.Hour),
+			EndTime:    now.Add(2 * time.Hour),
+			Status:     models.BookingStatusInUse,
+		},
+	}}
+	proofs := &fakeProofStore{proofs: map[string][]models.BookingProof{
+		"b-active": {{
+			ID:         "p-supabase",
+			BookingID:  "b-active",
+			Kind:       models.ProofKindBefore,
+			Path:       "owner-1/b-active/before-1111.jpg",
+			UploadedBy: "owner-1",
+		}},
+	}}
+	drive := &fakeDriveStorage{}
+
+	cfg := &config.Config{
+		SupabaseURL:                    storageServer.URL,
+		SupabaseServiceKey:             "test-service-role-key",
+		SupabaseStorageBucketResources: "resource-photos",
+		SupabaseStorageBucketProofs:    "booking-proofs",
+	}
+	handler := NewStorageHandler(cfg, bookings, proofs, services.NewProofService(bookings))
+	handler.SetSharePoint(drive)
+
+	app := newHandlerTestApp()
+	app.Post("/api/bookings/:bookingId/proofs/upload", testAuthMiddleware, handler.UploadProof)
+	app.Get("/api/bookings/:bookingId/proofs/signed", testAuthMiddleware, handler.ListProofsSigned)
+
+	upload := func() *http.Response {
+		req := makeMultipartRequest(t, http.MethodPost, "/api/bookings/b-active/proofs/upload", map[string]string{"kind": "after"}, "file", "after.jpg", validJPEGSample)
+		req.Header.Set("X-Test-User-Id", "owner-1")
+		resp, err := app.Test(req, -1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+
+	// 1. Upload goes to SharePoint and records item id + webUrl.
+	resp := upload()
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 201, got %d: %s", resp.StatusCode, string(body))
+	}
+	var created struct {
+		Path        string `json:"path"`
+		DriveItemID string `json:"driveItemId"`
+		WebURL      string `json:"webUrl"`
+		URL         string `json:"url"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	if created.DriveItemID != "item-1" ||
+		created.URL != "https://sp.example/download/item-1" ||
+		!strings.HasPrefix(created.WebURL, "https://sp.example/owner-1/b-active/after-") ||
+		!strings.HasPrefix(created.Path, "owner-1/b-active/after-") {
+		t.Fatalf("unexpected SharePoint proof response: %+v", created)
+	}
+	if supabaseUploads != 0 {
+		t.Fatalf("expected no Supabase upload when SharePoint is set, got %d", supabaseUploads)
+	}
+
+	// 2. List returns SharePoint download URL and still signs old Supabase proofs.
+	listReq := httptest.NewRequest(http.MethodGet, "/api/bookings/b-active/proofs/signed", nil)
+	listReq.Header.Set("X-Test-User-Id", "owner-1")
+	listResp, err := app.Test(listReq, -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listResp.Body.Close()
+	var items []struct {
+		ID  string `json:"id"`
+		URL string `json:"url"`
+	}
+	if err := json.NewDecoder(listResp.Body).Decode(&items); err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 2 ||
+		!strings.Contains(items[0].URL, "/object/sign/booking-proofs/owner-1/b-active/before-1111.jpg?token=ok") ||
+		items[1].URL != "https://sp.example/download/item-1" {
+		t.Fatalf("unexpected proof list: %+v", items)
+	}
+
+	// 3. DB insert failure deletes the SharePoint item.
+	proofs.mu.Lock()
+	proofs.createErr = errors.New("simulated database failure")
+	proofs.mu.Unlock()
+	failResp := upload()
+	defer failResp.Body.Close()
+	if failResp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("expected 500 on DB failure, got %d", failResp.StatusCode)
+	}
+	drive.mu.Lock()
+	if len(drive.deleted) != 1 || drive.deleted[0] != "item-2" {
+		t.Fatalf("expected item-2 cleanup, deleted=%v", drive.deleted)
+	}
+	drive.uploadErr = errors.New("graph down")
+	drive.mu.Unlock()
+	proofs.mu.Lock()
+	proofs.createErr = nil
+	proofs.mu.Unlock()
+
+	// 4. SharePoint unavailable -> 503 STORAGE_UNAVAILABLE.
+	downResp := upload()
+	defer downResp.Body.Close()
+	if downResp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 when SharePoint fails, got %d", downResp.StatusCode)
 	}
 }
 

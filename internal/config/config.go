@@ -48,6 +48,22 @@ type Config struct {
 	OpenWABaseURL   string
 	OpenWAAPIKey    string
 	OpenWASessionID string
+
+	// Graph proof storage via delegated refresh token (optional - if any of
+	// tenant/client/secret/refresh token is empty, proofs stay in Supabase
+	// Storage). Empty SPSitePath = user's OneDrive (Plan A), set = SharePoint (Plan B).
+	MSTenantID     string
+	MSClientID     string
+	MSClientSecret string
+	MSRefreshToken string
+	SPSitePath     string // e.g. kemenpkp.sharepoint.com:/sites/DokumentasiKompuSumatera2
+	SPFolder       string
+}
+
+// SharePointEnabled reports whether Graph proof storage (OneDrive or SharePoint) is configured.
+func (c *Config) SharePointEnabled() bool {
+	return c.MSTenantID != "" && c.MSClientID != "" && c.MSClientSecret != "" &&
+		c.MSRefreshToken != ""
 }
 
 // Load reads configuration from a .env file (if present) and the environment.
@@ -87,6 +103,13 @@ func Load() *Config {
 		OpenWABaseURL:   getEnv("OPENWA_BASE_URL", ""),
 		OpenWAAPIKey:    getEnv("OPENWA_API_KEY", ""),
 		OpenWASessionID: getEnv("OPENWA_SESSION_ID", ""),
+
+		MSTenantID:     strings.TrimSpace(getEnv("MS_TENANT_ID", "")),
+		MSClientID:     strings.TrimSpace(getEnv("MS_CLIENT_ID", "")),
+		MSClientSecret: strings.TrimSpace(getEnv("MS_CLIENT_SECRET", "")),
+		MSRefreshToken: strings.TrimSpace(getEnv("MS_REFRESH_TOKEN", "")),
+		SPSitePath:     strings.TrimSpace(getEnv("SP_SITE_PATH", "")),
+		SPFolder:       strings.TrimSpace(getEnv("SP_FOLDER", "booking-proofs")),
 	}
 
 	if cfg.DatabaseURL == "" {
@@ -103,6 +126,9 @@ func Load() *Config {
 	}
 	if cfg.OpenWABaseURL == "" {
 		log.Println("OPENWA_BASE_URL not set: WhatsApp notifications will be logged only, not actually sent")
+	}
+	if !cfg.SharePointEnabled() {
+		log.Println("MS_* not fully set: booking proofs will be stored in Supabase Storage, not OneDrive/SharePoint")
 	}
 
 	return cfg
