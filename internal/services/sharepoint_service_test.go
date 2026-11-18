@@ -280,3 +280,59 @@ func TestOneDriveModeUsesMeDriveAndOwnTokenSlot(t *testing.T) {
 		t.Fatal("expected invalid drive ref to be rejected")
 	}
 }
+
+func TestResourcePhotoUploadAndCachedURL(t *testing.T) {
+	var (
+		mu      sync.Mutex
+		lookups int
+		putPath string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch {
+		case r.URL.Path == "/tenant-1/oauth2/v2.0/token":
+			writeJSON(w, map[string]any{"access_token": "access-1", "expires_in": 3600})
+		case r.URL.Path == "/v1.0/me/drive":
+			writeJSON(w, map[string]string{"id": "od-drive"})
+		case r.Method == http.MethodPut:
+			putPath = r.URL.Path
+			w.WriteHeader(http.StatusCreated)
+			writeJSON(w, map[string]string{"id": "item-1"})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1.0/drives/od-drive/root:/resource-photos/abc.jpg":
+			lookups++
+			writeJSON(w, map[string]string{"@microsoft.graph.downloadUrl": "https://kemenpkp-my.sharepoint.com/download.aspx?tempauth=p"})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	cfg := sharePointTestConfig("env-refresh")
+	cfg.SPSitePath = ""
+	s := NewSharePointService(cfg, &memGraphTokenStore{tokens: map[string]string{}})
+	s.loginBase, s.graphBase = srv.URL, srv.URL+"/v1.0"
+	ctx := context.Background()
+
+	driveID, err := s.UploadPhoto(ctx, "abc.jpg", "image/jpeg", []byte{0xFF})
+	if err != nil || driveID != "od-drive" {
+		t.Fatalf("unexpected photo upload result: %q %v", driveID, err)
+	}
+	if putPath != "/v1.0/drives/od-drive/root:/resource-photos/abc.jpg:/content" {
+		t.Fatalf("unexpected photo upload path: %s", putPath)
+	}
+	for i := 0; i < 2; i++ {
+		if u, err := s.PhotoURL(ctx, driveID, "abc.jpg"); err != nil || !strings.HasPrefix(u, "https://") {
+			t.Fatalf("photo URL: %q %v", u, err)
+		}
+	}
+	if lookups != 1 {
+		t.Fatalf("expected cached photo URL (1 lookup), got %d", lookups)
+	}
+	if _, err := s.PhotoURL(ctx, driveID, "../x.jpg"); err == nil {
+		t.Fatal("expected traversal name to be rejected")
+	}
+	if _, err := s.UploadPhoto(ctx, "a/b.jpg", "image/jpeg", []byte{1}); err == nil {
+		t.Fatal("expected nested photo name to be rejected")
+	}
+}

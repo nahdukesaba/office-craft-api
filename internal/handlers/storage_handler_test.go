@@ -132,6 +132,23 @@ func (d *fakeDriveStorage) DownloadURL(_ context.Context, itemID string) (string
 	return "https://sp.example/download/" + itemID, nil
 }
 
+func (d *fakeDriveStorage) UploadPhoto(_ context.Context, name, _ string, _ []byte) (string, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.uploadErr != nil {
+		return "", d.uploadErr
+	}
+	d.uploaded = append(d.uploaded, "resource-photos/"+name)
+	return "b!drive", nil
+}
+
+func (d *fakeDriveStorage) PhotoURL(_ context.Context, driveID, name string) (string, error) {
+	if name == "missing.jpg" {
+		return "", fmt.Errorf("graph download URL failed: HTTP 404")
+	}
+	return "https://sp.example/download/" + driveID + "/" + name, nil
+}
+
 func (s *fakeProofStore) ListByBooking(_ context.Context, bookingID string) ([]models.BookingProof, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -924,5 +941,69 @@ func TestValidateResourceInput(t *testing.T) {
 		Color: "not-a-hex-color",
 	}); err == nil {
 		t.Fatal("expected invalid hex color to fail validation")
+	}
+}
+
+func TestStorageHandler_ResourcePhotoOnDrive(t *testing.T) {
+	cfg := &config.Config{SupabaseURL: "http://unused.invalid", SupabaseServiceKey: "k"}
+	bookings := &fakeBookingFinder{bookings: map[string]*models.Booking{}}
+	handler := NewStorageHandler(cfg, bookings, &fakeProofStore{}, services.NewProofService(bookings))
+
+	app := newHandlerTestApp()
+	app.Post("/api/resources/photos/upload", testAuthMiddleware, middleware.RequireAdmin(), handler.UploadResourcePhoto)
+	app.Get("/api/resources/photos/:driveId/:name", handler.ResourcePhoto)
+
+	// Without Graph storage the redirect endpoint does not exist.
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/api/resources/photos/b!drive/a.jpg", nil), -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 without drive storage, got %d", resp.StatusCode)
+	}
+
+	drive := &fakeDriveStorage{}
+	handler.SetSharePoint(drive)
+
+	req := makeMultipartRequest(t, http.MethodPost, "/api/resources/photos/upload", nil, "file", "room.jpg", validJPEGSample)
+	req.Header.Set("X-Test-User-Id", "admin-1")
+	req.Header.Set("X-Test-Role", "admin")
+	req.Host = "silapet.example"
+	req.Header.Set("X-Forwarded-Proto", "https")
+	resp, err = app.Test(req, -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body struct {
+		PhotoURL string `json:"photoUrl"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated ||
+		!strings.HasPrefix(body.PhotoURL, "https://silapet.example/api/resources/photos/b!drive/") ||
+		!strings.HasSuffix(body.PhotoURL, ".jpg") {
+		t.Fatalf("unexpected upload response %d %q", resp.StatusCode, body.PhotoURL)
+	}
+	if len(drive.uploaded) != 1 || !strings.HasPrefix(drive.uploaded[0], "resource-photos/") {
+		t.Fatalf("expected one OneDrive photo upload, got %v", drive.uploaded)
+	}
+
+	resp, err = app.Test(httptest.NewRequest(http.MethodGet, strings.TrimPrefix(body.PhotoURL, "https://silapet.example"), nil), -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusFound || !strings.HasPrefix(resp.Header.Get("Location"), "https://sp.example/download/b!drive/") {
+		t.Fatalf("expected redirect to download URL, got %d %q", resp.StatusCode, resp.Header.Get("Location"))
+	}
+
+	resp, err = app.Test(httptest.NewRequest(http.MethodGet, "/api/resources/photos/b!drive/missing.jpg", nil), -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 for missing photo, got %d", resp.StatusCode)
 	}
 }

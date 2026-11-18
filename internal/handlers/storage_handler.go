@@ -32,11 +32,14 @@ type storageProofStore interface {
 	ListByBooking(ctx context.Context, bookingID string) ([]models.BookingProof, error)
 }
 
-// proofDriveStorage is the SharePoint backend for booking proofs.
+// proofDriveStorage is the OneDrive/SharePoint backend for booking proofs
+// and resource photos.
 type proofDriveStorage interface {
 	Upload(ctx context.Context, path, mime string, file []byte) (itemID, webURL string, err error)
 	Delete(ctx context.Context, itemID string) error
 	DownloadURL(ctx context.Context, itemID string) (string, error)
+	UploadPhoto(ctx context.Context, name, mime string, file []byte) (driveID string, err error)
+	PhotoURL(ctx context.Context, driveID, name string) (string, error)
 }
 
 type storageProofValidator interface {
@@ -174,6 +177,24 @@ func (h *StorageHandler) UploadResourcePhoto(
 		)
 	}
 
+	if h.sharepoint != nil {
+		name := key + ext
+		driveID, err := h.sharepoint.UploadPhoto(c.UserContext(), name, mime, data)
+		if err != nil {
+			log.Printf("resource photo upload error: %v", err)
+			return apperror.New(
+				fiber.StatusServiceUnavailable,
+				"STORAGE_UNAVAILABLE",
+				"resource storage unavailable",
+			)
+		}
+		// BaseURL honours nginx's Host and X-Forwarded-Proto, so the stored
+		// URL is the public https address.
+		return c.Status(fiber.StatusCreated).JSON(
+			fiber.Map{"photoUrl": c.BaseURL() + "/api/resources/photos/" + driveID + "/" + name},
+		)
+	}
+
 	path := "resources/" + key + ext
 
 	if err := h.storage.Upload(
@@ -204,6 +225,22 @@ func (h *StorageHandler) UploadResourcePhoto(
 	return c.Status(fiber.StatusCreated).JSON(
 		fiber.Map{"photoUrl": publicURL},
 	)
+}
+
+// ResourcePhoto redirects to a short-lived OneDrive/SharePoint download link,
+// giving resource photos a permanent public URL.
+func (h *StorageHandler) ResourcePhoto(c *fiber.Ctx) error {
+	if h.sharepoint == nil {
+		return apperror.NotFound("PHOTO_NOT_FOUND", "photo not found")
+	}
+	u, err := h.sharepoint.PhotoURL(c.UserContext(), c.Params("driveId"), c.Params("name"))
+	if err != nil {
+		log.Printf("resource photo URL error: %v", err)
+		return apperror.NotFound("PHOTO_NOT_FOUND", "photo not found")
+	}
+	// Shorter than the service cache so browsers never hold an expired link.
+	c.Set(fiber.HeaderCacheControl, "public, max-age=600")
+	return c.Redirect(u, fiber.StatusFound)
 }
 
 func (h *StorageHandler) bookingForUser(

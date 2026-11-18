@@ -17,7 +17,11 @@ import (
 	"office-craft-api/internal/config"
 )
 
-const graphResponseLimit = 64 * 1024
+const (
+	graphResponseLimit  = 64 * 1024
+	resourcePhotoFolder = "resource-photos"
+	photoURLCacheTTL    = 30 * time.Minute // Graph download links live about 1 h
+)
 
 // Plan A (SP_SITE_PATH empty): the signed-in user's OneDrive, Files.ReadWrite.
 // Plan B (SP_SITE_PATH set): a SharePoint site library, Files.ReadWrite.All
@@ -58,6 +62,14 @@ type SharePointService struct {
 	accessToken string
 	accessExp   time.Time
 	driveID     string
+
+	photoMu   sync.Mutex
+	photoURLs map[string]cachedURL
+}
+
+type cachedURL struct {
+	url string
+	exp time.Time
 }
 
 // NewSharePointService returns nil when Graph storage is not fully configured.
@@ -90,6 +102,7 @@ func NewSharePointService(cfg *config.Config, tokens GraphTokenStore) *SharePoin
 		folder:     folder,
 		tokens:     tokens,
 		client:     &http.Client{Timeout: 30 * time.Second},
+		photoURLs:  map[string]cachedURL{},
 	}
 }
 
@@ -314,28 +327,48 @@ func (s *SharePointService) itemTarget(ctx context.Context, ref string) (string,
 
 // Upload stores file at <folder>/<path> and returns the item ref
 // ("<driveID>/<itemID>") and webUrl.
-// Simple PUT upload is enough: proofs are capped at MaxStorageUploadBytes,
-// well under Graph's simple-upload limit.
 func (s *SharePointService) Upload(
 	ctx context.Context,
 	path, mime string,
 	file []byte,
 ) (string, string, error) {
-	if len(file) == 0 || len(file) > MaxStorageUploadBytes {
-		return "", "", errors.New("invalid storage object size")
-	}
-	mime = strings.TrimSpace(mime)
-	if mime == "" {
-		return "", "", errors.New("storage content type is required")
-	}
-
 	object, err := storagePath(s.folder, path)
 	if err != nil {
 		return "", "", err
 	}
-	driveID, err := s.drive(ctx)
+	driveID, itemID, webURL, err := s.put(ctx, object, mime, file)
 	if err != nil {
 		return "", "", err
+	}
+	return driveID + "/" + itemID, webURL, nil
+}
+
+// UploadPhoto stores a resource photo at resource-photos/<name> and returns
+// the drive id, which PhotoURL needs to find it again after a plan switch.
+func (s *SharePointService) UploadPhoto(ctx context.Context, name, mime string, file []byte) (string, error) {
+	if hasInvalidPathSegment(name) {
+		return "", errors.New("invalid resource photo name")
+	}
+	driveID, _, _, err := s.put(ctx, resourcePhotoFolder+"/"+name, mime, file)
+	return driveID, err
+}
+
+// put uploads with a simple PUT: files are capped at MaxStorageUploadBytes,
+// well under Graph's simple-upload limit.
+func (s *SharePointService) put(
+	ctx context.Context,
+	object, mime string,
+	file []byte,
+) (driveID, itemID, webURL string, err error) {
+	if len(file) == 0 || len(file) > MaxStorageUploadBytes {
+		return "", "", "", errors.New("invalid storage object size")
+	}
+	mime = strings.TrimSpace(mime)
+	if mime == "" {
+		return "", "", "", errors.New("storage content type is required")
+	}
+	if driveID, err = s.drive(ctx); err != nil {
+		return "", "", "", err
 	}
 
 	resp, err := s.do(
@@ -346,7 +379,7 @@ func (s *SharePointService) Upload(
 		bytes.NewReader(file),
 	)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	defer resp.Body.Close()
 
@@ -354,13 +387,13 @@ func (s *SharePointService) Upload(
 		ID     string `json:"id"`
 		WebURL string `json:"webUrl"`
 	}
-	if err := decodeGraph(resp, &item, "sharepoint upload"); err != nil {
-		return "", "", err
+	if err := decodeGraph(resp, &item, "graph upload"); err != nil {
+		return "", "", "", err
 	}
 	if item.ID == "" {
-		return "", "", errors.New("sharepoint upload returned no item id")
+		return "", "", "", errors.New("graph upload returned no item id")
 	}
-	return driveID + "/" + item.ID, item.WebURL, nil
+	return driveID, item.ID, item.WebURL, nil
 }
 
 func (s *SharePointService) Delete(ctx context.Context, itemID string) error {
@@ -384,16 +417,46 @@ func (s *SharePointService) DownloadURL(ctx context.Context, itemID string) (str
 		return "", err
 	}
 
+	return s.downloadURL(ctx, target)
+}
+
+// PhotoURL returns a download link for resource-photos/<name> in driveID.
+// Lookup is by path, so this public endpoint cannot reach booking proofs.
+// Links are cached because every resource card load asks for one.
+func (s *SharePointService) PhotoURL(ctx context.Context, driveID, name string) (string, error) {
+	if hasInvalidPathSegment(driveID) || hasInvalidPathSegment(name) {
+		return "", errors.New("invalid resource photo ref")
+	}
+	key := driveID + "/" + name
+
+	s.photoMu.Lock()
+	cached, ok := s.photoURLs[key]
+	s.photoMu.Unlock()
+	if ok && time.Now().Before(cached.exp) {
+		return cached.url, nil
+	}
+
+	u, err := s.downloadURL(ctx, "/drives/"+url.PathEscape(driveID)+"/root:/"+resourcePhotoFolder+"/"+url.PathEscape(name))
+	if err != nil {
+		return "", err
+	}
+	s.photoMu.Lock()
+	s.photoURLs[key] = cachedURL{url: u, exp: time.Now().Add(photoURLCacheTTL)}
+	s.photoMu.Unlock()
+	return u, nil
+}
+
+func (s *SharePointService) downloadURL(ctx context.Context, target string) (string, error) {
 	var item struct {
 		DownloadURL string `json:"@microsoft.graph.downloadUrl"`
 	}
-	if err := s.getJSON(ctx, target, &item, "sharepoint download URL"); err != nil {
+	if err := s.getJSON(ctx, target, &item, "graph download URL"); err != nil {
 		return "", err
 	}
 
 	parsed, err := url.Parse(item.DownloadURL)
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
-		return "", errors.New("sharepoint did not return a valid download URL")
+		return "", errors.New("graph did not return a valid download URL")
 	}
 	return item.DownloadURL, nil
 }

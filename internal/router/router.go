@@ -80,6 +80,7 @@ func Setup(app *fiber.App, cfg *config.Config, pool *pgxpool.Pool, appSessions *
 	resources := api.Group("/resources")
 	resources.Get("/", resourceHandler.List)
 	resources.Get("/:id", requireSession, requireAuth, resourceHandler.Get)
+	resources.Get("/photos/:driveId/:name", storageHandler.ResourcePhoto) // public, like the resource list
 	resources.Post("/photos/upload", requireSession, requireAuth, requireAdmin, storageHandler.UploadResourcePhoto)
 	resources.Post("/", requireSession, requireAuth, requireAdmin, resourceHandler.Create)
 	resources.Put("/:id", requireSession, requireAuth, requireAdmin, resourceHandler.Update)
