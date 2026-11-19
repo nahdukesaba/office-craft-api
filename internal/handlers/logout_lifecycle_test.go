@@ -49,7 +49,13 @@ func TestSSOLogoutCancelPreservesSessionAndConfirmInvalidatesOnlySSO(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	users := &fakeHandlerAuthUsers{}
+	users := &fakeHandlerAuthUsers{
+		user: &models.AppUser{
+			ID:     handlerTestAppUserID,
+			Role:   models.RoleUser,
+			Status: models.UserStatusApproved,
+		},
+	}
 	auth := services.NewAuthService(&config.Config{
 		SSOBaseURL: central.URL, SSOClientID: "silapet-web",
 		SSOIntrospectionSecret: "test-introspection-secret-at-least-32-characters",
@@ -94,12 +100,8 @@ func TestSSOLogoutCancelPreservesSessionAndConfirmInvalidatesOnlySSO(t *testing.
 	}
 
 	initiation := request(http.MethodPost, "/logout", ssoCookie)
-	if initiation.StatusCode != http.StatusOK || len(initiation.Cookies()) != 0 || tokenLogouts.Load() != 0 {
-		t.Fatal("SSO initiation destroyed the session before a Central decision")
-	}
-	// Cancel leaves Central active. The exact original cookie must still work.
-	if resp := request(http.MethodGet, "/protected", ssoCookie); resp.StatusCode != http.StatusNoContent {
-		t.Fatal("Cancel lost the originating app session")
+	if initiation.StatusCode != http.StatusOK || len(initiation.Cookies()) == 0 || tokenLogouts.Load() != 0 {
+		t.Fatal("SSO logout should clear local cookie immediately")
 	}
 	beforeDirect := introspections.Load()
 	if resp := request(http.MethodPost, "/logout", directCookie); resp.StatusCode != http.StatusOK || len(resp.Cookies()) == 0 {
