@@ -112,7 +112,7 @@ func TestSharePointUploadDownloadDeleteAndTokenRotation(t *testing.T) {
 			writeJSON(w, map[string]string{"id": "contoso.sharepoint.com,site-guid,web-guid"})
 		case r.Method == http.MethodGet && r.URL.Path == "/v1.0/sites/contoso.sharepoint.com,site-guid,web-guid/drive":
 			writeJSON(w, map[string]string{"id": "drive-1"})
-		case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/v1.0/drives/drive-1/root:/booking-proofs/"):
+		case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/v1.0/drives/drive-1/root:/db/silapet/booking-proofs/"):
 			uploadPath = r.URL.Path
 			uploadQuery = r.URL.RawQuery
 			uploadType = r.Header.Get("Content-Type")
@@ -147,7 +147,7 @@ func TestSharePointUploadDownloadDeleteAndTokenRotation(t *testing.T) {
 	if itemID != "drive-1/item-1" || !strings.HasPrefix(webURL, "https://contoso.sharepoint.com/") {
 		t.Fatalf("unexpected upload result: %q %q", itemID, webURL)
 	}
-	if uploadPath != "/v1.0/drives/drive-1/root:/booking-proofs/owner-1/b-1/before-abc.jpg:/content" {
+	if uploadPath != "/v1.0/drives/drive-1/root:/db/silapet/booking-proofs/owner-1/b-1/before-abc.jpg:/content" {
 		t.Fatalf("unexpected upload path: %s", uploadPath)
 	}
 	if uploadQuery != "@microsoft.graph.conflictBehavior=fail" || uploadType != "image/jpeg" {
@@ -233,7 +233,7 @@ func TestOneDriveModeUsesMeDriveAndOwnTokenSlot(t *testing.T) {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1.0/me/drive":
 			meCalls++
 			writeJSON(w, map[string]string{"id": "od-drive"})
-		case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/v1.0/drives/od-drive/root:/booking-proofs/"):
+		case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/v1.0/drives/od-drive/root:/db/silapet/booking-proofs/"):
 			w.WriteHeader(http.StatusCreated)
 			writeJSON(w, map[string]string{"id": "item-9", "webUrl": "https://kemenpkp-my.sharepoint.com/x.jpg"})
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1.0/drives/"):
@@ -299,7 +299,7 @@ func TestResourcePhotoUploadAndCachedURL(t *testing.T) {
 			putPath = r.URL.Path
 			w.WriteHeader(http.StatusCreated)
 			writeJSON(w, map[string]string{"id": "item-1"})
-		case r.Method == http.MethodGet && r.URL.Path == "/v1.0/drives/od-drive/root:/resource-photos/abc.jpg":
+		case r.Method == http.MethodGet && r.URL.Path == "/v1.0/drives/od-drive/root:/db/silapet/resource-photos/abc.jpg":
 			lookups++
 			writeJSON(w, map[string]string{"@microsoft.graph.downloadUrl": "https://kemenpkp-my.sharepoint.com/download.aspx?tempauth=p"})
 		default:
@@ -318,7 +318,7 @@ func TestResourcePhotoUploadAndCachedURL(t *testing.T) {
 	if err != nil || driveID != "od-drive" {
 		t.Fatalf("unexpected photo upload result: %q %v", driveID, err)
 	}
-	if putPath != "/v1.0/drives/od-drive/root:/resource-photos/abc.jpg:/content" {
+	if putPath != "/v1.0/drives/od-drive/root:/db/silapet/resource-photos/abc.jpg:/content" {
 		t.Fatalf("unexpected photo upload path: %s", putPath)
 	}
 	for i := 0; i < 2; i++ {

@@ -19,7 +19,7 @@ import (
 
 const (
 	graphResponseLimit  = 64 * 1024
-	resourcePhotoFolder = "resource-photos"
+	resourcePhotoFolder = "db/silapet/resource-photos"
 	photoURLCacheTTL    = 30 * time.Minute // Graph download links live about 1 h
 )
 
@@ -77,9 +77,9 @@ func NewSharePointService(cfg *config.Config, tokens GraphTokenStore) *SharePoin
 	if !cfg.SharePointEnabled() {
 		return nil
 	}
-	folder := strings.TrimSpace(cfg.SPFolder)
+	folder := strings.Trim(cfg.SPFolder, " /")
 	if folder == "" {
-		folder = "booking-proofs"
+		folder = "db/silapet/booking-proofs"
 	}
 	sitePath := strings.Trim(cfg.SPSitePath, "/")
 	scope, tokenID := oneDriveScope, oneDriveTokenID
@@ -332,7 +332,9 @@ func (s *SharePointService) Upload(
 	path, mime string,
 	file []byte,
 ) (string, string, error) {
-	object, err := storagePath(s.folder, path)
+	// The folder may be nested (db/silapet/booking-proofs); storagePath validates every segment.
+	head, rest, _ := strings.Cut(s.folder+"/"+path, "/")
+	object, err := storagePath(head, rest)
 	if err != nil {
 		return "", "", err
 	}
@@ -343,7 +345,7 @@ func (s *SharePointService) Upload(
 	return driveID + "/" + itemID, webURL, nil
 }
 
-// UploadPhoto stores a resource photo at resource-photos/<name> and returns
+// UploadPhoto stores a resource photo at db/silapet/resource-photos/<name> and returns
 // the drive id, which PhotoURL needs to find it again after a plan switch.
 func (s *SharePointService) UploadPhoto(ctx context.Context, name, mime string, file []byte) (string, error) {
 	if hasInvalidPathSegment(name) {
@@ -420,7 +422,7 @@ func (s *SharePointService) DownloadURL(ctx context.Context, itemID string) (str
 	return s.downloadURL(ctx, target)
 }
 
-// PhotoURL returns a download link for resource-photos/<name> in driveID.
+// PhotoURL returns a download link for db/silapet/resource-photos/<name> in driveID.
 // Lookup is by path, so this public endpoint cannot reach booking proofs.
 // Links are cached because every resource card load asks for one.
 func (s *SharePointService) PhotoURL(ctx context.Context, driveID, name string) (string, error) {

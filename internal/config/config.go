@@ -109,7 +109,7 @@ func Load() *Config {
 		MSClientSecret: strings.TrimSpace(getEnv("MS_CLIENT_SECRET", "")),
 		MSRefreshToken: strings.TrimSpace(getEnv("MS_REFRESH_TOKEN", "")),
 		SPSitePath:     strings.TrimSpace(getEnv("SP_SITE_PATH", "")),
-		SPFolder:       strings.TrimSpace(getEnv("SP_FOLDER", "booking-proofs")),
+		SPFolder:       strings.TrimSpace(getEnv("SP_FOLDER", "db/silapet/booking-proofs")),
 	}
 
 	if cfg.DatabaseURL == "" {
