@@ -75,6 +75,9 @@ func (h *AuthHandler) SSOLogoutStart(c *fiber.Ctx) error {
 	if cancelReturn == "" {
 		cancelReturn = strings.TrimSpace(c.Query("return_to"))
 	}
+	if h.appSessions != nil {
+		h.appSessions.Clear(c)
+	}
 	logoutURL, err := h.auth.StartBrowserSSOLogout(cancelReturn)
 	if err != nil {
 		if ae, ok := err.(*services.AuthError); ok {
@@ -181,10 +184,10 @@ func (h *AuthHandler) Logout(c *fiber.Ctx) error {
 	if !ok {
 		return apperror.Unauthorized("application session is unavailable")
 	}
+	if h.appSessions != nil {
+		h.appSessions.Clear(c)
+	}
 	if session.LoginSource == models.LoginSourceSSO {
-		// Preserve the app cookie and upstream session until Central confirms.
-		// Cancel returns through /login and validates the same SID; Confirm
-		// revokes it and the next /me or refresh clears the invalid app cookie.
 		c.Set(fiber.HeaderCacheControl, "no-store")
 		return c.JSON(fiber.Map{"centralLogoutRequired": true})
 	}

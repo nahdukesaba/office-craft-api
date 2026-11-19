@@ -78,6 +78,7 @@ func (s *AuthService) StartBrowserSSOLogout(cancelReturn ...string) (string, err
 	query := centralURL.Query()
 	query.Set("client_id", clientID)
 	query.Set("post_logout_redirect_uri", postLogoutRedirectURI)
+	query.Set("immediate", "1")
 	if len(cancelReturn) > 0 && cancelReturn[0] != "" {
 		if sanitized := sanitizeBrowserSSOCancelReturn(cancelReturn[0]); sanitized != "" {
 			query.Set("cancel_return", sanitized)
