@@ -28,7 +28,18 @@ type storageBookingFinder interface {
 
 type storageProofStore interface {
 	Create(ctx context.Context, bookingID, kind, path, uploadedBy string) (*models.BookingProof, error)
+	CreateDriveProof(ctx context.Context, bookingID, kind, path, uploadedBy, driveItemID, webURL string) (*models.BookingProof, error)
 	ListByBooking(ctx context.Context, bookingID string) ([]models.BookingProof, error)
+}
+
+// proofDriveStorage is the OneDrive/SharePoint backend for booking proofs
+// and resource photos.
+type proofDriveStorage interface {
+	Upload(ctx context.Context, path, mime string, file []byte) (itemID, webURL string, err error)
+	Delete(ctx context.Context, itemID string) error
+	DownloadURL(ctx context.Context, itemID string) (string, error)
+	UploadPhoto(ctx context.Context, name, mime string, file []byte) (driveID string, err error)
+	PhotoURL(ctx context.Context, driveID, name string) (string, error)
 }
 
 type storageProofValidator interface {
@@ -42,6 +53,12 @@ type StorageHandler struct {
 	proofRules      storageProofValidator
 	resourcesBucket string
 	proofsBucket    string
+	sharepoint      proofDriveStorage // nil: proofs go to Supabase Storage
+}
+
+// SetSharePoint routes new proof uploads to SharePoint.
+func (h *StorageHandler) SetSharePoint(sp proofDriveStorage) {
+	h.sharepoint = sp
 }
 
 func NewStorageHandler(
@@ -160,6 +177,24 @@ func (h *StorageHandler) UploadResourcePhoto(
 		)
 	}
 
+	if h.sharepoint != nil {
+		name := key + ext
+		driveID, err := h.sharepoint.UploadPhoto(c.UserContext(), name, mime, data)
+		if err != nil {
+			log.Printf("resource photo upload error: %v", err)
+			return apperror.New(
+				fiber.StatusServiceUnavailable,
+				"STORAGE_UNAVAILABLE",
+				"resource storage unavailable",
+			)
+		}
+		// BaseURL honours nginx's Host and X-Forwarded-Proto, so the stored
+		// URL is the public https address.
+		return c.Status(fiber.StatusCreated).JSON(
+			fiber.Map{"photoUrl": c.BaseURL() + "/api/resources/photos/" + driveID + "/" + name},
+		)
+	}
+
 	path := "resources/" + key + ext
 
 	if err := h.storage.Upload(
@@ -190,6 +225,22 @@ func (h *StorageHandler) UploadResourcePhoto(
 	return c.Status(fiber.StatusCreated).JSON(
 		fiber.Map{"photoUrl": publicURL},
 	)
+}
+
+// ResourcePhoto redirects to a short-lived OneDrive/SharePoint download link,
+// giving resource photos a permanent public URL.
+func (h *StorageHandler) ResourcePhoto(c *fiber.Ctx) error {
+	if h.sharepoint == nil {
+		return apperror.NotFound("PHOTO_NOT_FOUND", "photo not found")
+	}
+	u, err := h.sharepoint.PhotoURL(c.UserContext(), c.Params("driveId"), c.Params("name"))
+	if err != nil {
+		log.Printf("resource photo URL error: %v", err)
+		return apperror.NotFound("PHOTO_NOT_FOUND", "photo not found")
+	}
+	// Shorter than the service cache so browsers never hold an expired link.
+	c.Set(fiber.HeaderCacheControl, "public, max-age=600")
+	return c.Redirect(u, fiber.StatusFound)
 }
 
 func (h *StorageHandler) bookingForUser(
@@ -293,6 +344,10 @@ func (h *StorageHandler) UploadProof(
 		ext,
 	)
 
+	if h.sharepoint != nil {
+		return h.uploadProofToSharePoint(c, b, kind, path, mime, data)
+	}
+
 	if err := h.storage.Upload(
 		c.UserContext(),
 		h.proofsBucket,
@@ -343,6 +398,67 @@ func (h *StorageHandler) UploadProof(
 		}{
 			BookingProof: saved,
 			URL:          signedURL,
+		},
+	)
+}
+
+func (h *StorageHandler) deleteSharePointProof(itemID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+
+	if err := h.sharepoint.Delete(ctx, itemID); err != nil {
+		log.Printf("sharepoint proof cleanup failed: %v", err)
+	}
+}
+
+func (h *StorageHandler) uploadProofToSharePoint(
+	c *fiber.Ctx,
+	b *models.Booking,
+	kind, path, mime string,
+	data []byte,
+) error {
+	itemID, webURL, err := h.sharepoint.Upload(c.UserContext(), path, mime, data)
+	if err != nil {
+		log.Printf("sharepoint proof upload error: %v", err)
+		return apperror.New(
+			fiber.StatusServiceUnavailable,
+			"STORAGE_UNAVAILABLE",
+			"proof storage unavailable",
+		)
+	}
+
+	downloadURL, err := h.sharepoint.DownloadURL(c.UserContext(), itemID)
+	if err != nil {
+		log.Printf("sharepoint proof URL error: %v", err)
+		h.deleteSharePointProof(itemID)
+		return apperror.New(
+			fiber.StatusServiceUnavailable,
+			"STORAGE_UNAVAILABLE",
+			"cannot prepare proof URL",
+		)
+	}
+
+	saved, err := h.proofs.CreateDriveProof(
+		c.UserContext(),
+		b.ID,
+		kind,
+		path,
+		middleware.UserIDFromCtx(c),
+		itemID,
+		webURL,
+	)
+	if err != nil {
+		h.deleteSharePointProof(itemID)
+		return apperror.Internal("failed to record proof")
+	}
+
+	return c.Status(fiber.StatusCreated).JSON(
+		struct {
+			*models.BookingProof
+			URL string `json:"url"`
+		}{
+			BookingProof: saved,
+			URL:          downloadURL,
 		},
 	)
 }
@@ -421,6 +537,28 @@ func (h *StorageHandler) ListProofsSigned(
 				"INVALID_PROOF_PATH",
 				"stored proof path does not match booking context",
 			)
+		}
+
+		if row.DriveItemID != nil && strings.TrimSpace(*row.DriveItemID) != "" {
+			if h.sharepoint == nil {
+				log.Printf("proof %s is stored in SharePoint but SharePoint is not configured", row.ID)
+				return apperror.New(
+					fiber.StatusServiceUnavailable,
+					"STORAGE_UNAVAILABLE",
+					"proof storage unavailable",
+				)
+			}
+			u, err := h.sharepoint.DownloadURL(c.UserContext(), *row.DriveItemID)
+			if err != nil {
+				log.Printf("sharepoint proof URL error: %v", err)
+				return apperror.New(
+					fiber.StatusServiceUnavailable,
+					"STORAGE_UNAVAILABLE",
+					"proof storage unavailable",
+				)
+			}
+			result = append(result, item{BookingProof: row, URL: u})
+			continue
 		}
 
 		signed, err := h.storage.SignedURL(

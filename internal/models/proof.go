@@ -15,6 +15,9 @@ type BookingProof struct {
 	Path       string    `json:"path" db:"path"`
 	UploadedBy string    `json:"uploadedBy" db:"uploaded_by"`
 	CreatedAt  time.Time `json:"createdAt" db:"created_at"`
+	// Set only for proofs stored in SharePoint (Microsoft Graph drive item).
+	DriveItemID *string `json:"driveItemId,omitempty" db:"drive_item_id"`
+	WebURL      *string `json:"webUrl,omitempty" db:"web_url"`
 }
 
 // ProofInput is the shape accepted on POST /bookings/:bookingId/proofs.

@@ -19,7 +19,7 @@ func NewProofRepository(pool *pgxpool.Pool) *ProofRepository {
 
 func (r *ProofRepository) ListByBooking(ctx context.Context, bookingID string) ([]models.BookingProof, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT id, booking_id, kind, path, uploaded_by, created_at
+		SELECT id, booking_id, kind, path, uploaded_by, created_at, drive_item_id, web_url
 		FROM public.booking_proofs WHERE booking_id = $1 AND deleted_at IS NULL ORDER BY created_at ASC
 	`, bookingID)
 	if err != nil {
@@ -30,7 +30,7 @@ func (r *ProofRepository) ListByBooking(ctx context.Context, bookingID string) (
 	var out []models.BookingProof
 	for rows.Next() {
 		var p models.BookingProof
-		if err := rows.Scan(&p.ID, &p.BookingID, &p.Kind, &p.Path, &p.UploadedBy, &p.CreatedAt); err != nil {
+		if err := rows.Scan(&p.ID, &p.BookingID, &p.Kind, &p.Path, &p.UploadedBy, &p.CreatedAt, &p.DriveItemID, &p.WebURL); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -47,6 +47,21 @@ func (r *ProofRepository) Create(ctx context.Context, bookingID, kind, path, upl
 
 	var p models.BookingProof
 	if err := row.Scan(&p.ID, &p.BookingID, &p.Kind, &p.Path, &p.UploadedBy, &p.CreatedAt); err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
+// CreateDriveProof records a proof stored in SharePoint.
+func (r *ProofRepository) CreateDriveProof(ctx context.Context, bookingID, kind, path, uploadedBy, driveItemID, webURL string) (*models.BookingProof, error) {
+	row := r.pool.QueryRow(ctx, `
+		INSERT INTO public.booking_proofs (booking_id, kind, path, uploaded_by, drive_item_id, web_url)
+		VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''))
+		RETURNING id, booking_id, kind, path, uploaded_by, created_at, drive_item_id, web_url
+	`, bookingID, kind, path, uploadedBy, driveItemID, webURL)
+
+	var p models.BookingProof
+	if err := row.Scan(&p.ID, &p.BookingID, &p.Kind, &p.Path, &p.UploadedBy, &p.CreatedAt, &p.DriveItemID, &p.WebURL); err != nil {
 		return nil, err
 	}
 	return &p, nil
