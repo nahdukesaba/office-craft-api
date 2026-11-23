@@ -45,3 +45,21 @@ func (h *NotifyHandler) Notify(c *fiber.Ctx) error {
 	}
 	return c.JSON(result)
 }
+
+// OverdueSummary tells the admin who a reminder would reach before sending.
+func (h *NotifyHandler) OverdueSummary(c *fiber.Ctx) error {
+	summary, err := h.svc.OverdueSummary(c.UserContext())
+	if err != nil {
+		return err
+	}
+	return c.JSON(summary)
+}
+
+// RemindOverdue queues reminders for every overdue, unfinished booking.
+func (h *NotifyHandler) RemindOverdue(c *fiber.Ctx) error {
+	summary, err := h.svc.RemindOverdue(c.UserContext())
+	if err != nil {
+		return err
+	}
+	return c.Status(fiber.StatusAccepted).JSON(summary)
+}

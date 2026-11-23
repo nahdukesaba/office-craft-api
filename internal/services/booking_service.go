@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"slices"
+	"strings"
 	"time"
 
 	"office-craft-api/internal/apperror"
@@ -22,11 +23,12 @@ type BookingService struct {
 	users     *repository.UserRepository
 	proofs    *repository.ProofRepository
 	events    *repository.BookingEventRepository
+	rules     *repository.BookingRulesRepository
 	notify    *NotifyService
 }
 
-func NewBookingService(bookings *repository.BookingRepository, resources *repository.ResourceRepository, users *repository.UserRepository, proofs *repository.ProofRepository, events *repository.BookingEventRepository, notify *NotifyService) *BookingService {
-	return &BookingService{bookings: bookings, resources: resources, users: users, proofs: proofs, events: events, notify: notify}
+func NewBookingService(bookings *repository.BookingRepository, resources *repository.ResourceRepository, users *repository.UserRepository, proofs *repository.ProofRepository, events *repository.BookingEventRepository, rules *repository.BookingRulesRepository, notify *NotifyService) *BookingService {
+	return &BookingService{bookings: bookings, resources: resources, users: users, proofs: proofs, events: events, rules: rules, notify: notify}
 }
 
 func isOnInterval(t time.Time) bool {
@@ -113,8 +115,85 @@ func (s *BookingService) Validate(ctx context.Context, in models.BookingInput) e
 	return nil
 }
 
+// checkBookingRules applies the admin-toggled borrowing rules. It runs on
+// create and again on approve, so requests made before a rule was enabled
+// cannot slip through.
+func (s *BookingService) checkBookingRules(ctx context.Context, actorID, ownerID, resourceID string) error {
+	rules, err := s.rules.Get(ctx)
+	if err != nil {
+		return err
+	}
+	if rules.BlockUserUnfinished {
+		unfinished, err := s.bookings.ListUnfinishedByUser(ctx, ownerID)
+		if err != nil {
+			return err
+		}
+		if len(unfinished) > 0 {
+			return unfinishedBookingError(actorID, ownerID, s.userName(ctx, ownerID), s.resourceNames(ctx, unfinished))
+		}
+	}
+	if rules.BlockResourceOpenUsage {
+		holder, err := s.bookings.FindOpenUsage(ctx, resourceID)
+		if err != nil {
+			return err
+		}
+		if holder != nil {
+			return resourceInUseError(actorID, holder.UserID, s.userName(ctx, holder.UserID))
+		}
+	}
+	return nil
+}
+
+func unfinishedBookingError(actorID, ownerID, ownerName string, resourceNames []string) error {
+	isSelf := actorID == ownerID
+	who := ownerName
+	if isSelf {
+		who = "Anda"
+	}
+	return apperror.WithDetails(409, "USER_HAS_UNFINISHED_BOOKING",
+		who+" belum menyelesaikan peminjaman aset "+strings.Join(resourceNames, ", ")+".",
+		models.BookingRuleDetail{IsSelf: isSelf, UserFullName: ownerName, ResourceNames: resourceNames})
+}
+
+func resourceInUseError(actorID, holderID, holderName string) error {
+	isSelf := actorID == holderID
+	who := holderName
+	if isSelf {
+		who = "Anda"
+	}
+	return apperror.WithDetails(409, "RESOURCE_IN_USE",
+		"Aset ini masih dipakai oleh "+who+" dan belum ditutup admin.",
+		models.BookingRuleDetail{IsSelf: isSelf, UserFullName: holderName})
+}
+
+func (s *BookingService) userName(ctx context.Context, userID string) string {
+	if u, err := s.users.GetByID(ctx, userID); err == nil && u != nil {
+		return u.FullName
+	}
+	return "pegawai lain"
+}
+
+func (s *BookingService) resourceNames(ctx context.Context, bookings []models.Booking) []string {
+	ids := make([]string, 0, len(bookings))
+	for _, b := range bookings {
+		ids = append(ids, b.ResourceID)
+	}
+	// A failed lookup only makes the warning less specific; the rule still blocks.
+	byID, _ := s.resources.GetByIDs(ctx, ids)
+	names := make([]string, 0, len(bookings))
+	for _, b := range bookings {
+		if r := byID[b.ResourceID]; r != nil && !slices.Contains(names, r.Name) {
+			names = append(names, r.Name)
+		}
+	}
+	return names
+}
+
 func (s *BookingService) Create(ctx context.Context, userID string, in models.BookingInput) (*models.Booking, error) {
 	if err := s.Validate(ctx, in); err != nil {
+		return nil, err
+	}
+	if err := s.checkBookingRules(ctx, userID, userID, in.ResourceID); err != nil {
 		return nil, err
 	}
 	booking, err := s.bookings.Create(ctx, userID, in)
@@ -139,6 +218,11 @@ func (s *BookingService) Approve(ctx context.Context, actorID, id string) (*mode
 	}
 	if booking == nil {
 		return nil, nil, apperror.NotFound("BOOKING_NOT_FOUND", "booking not found")
+	}
+	if booking.Status == models.BookingStatusPending {
+		if err := s.checkBookingRules(ctx, actorID, booking.UserID, booking.ResourceID); err != nil {
+			return nil, nil, err
+		}
 	}
 
 	approved, autoRejectedIDs, err := s.bookings.ApproveWithAutoReject(ctx, id)
@@ -212,8 +296,8 @@ func (s *BookingService) Revoke(ctx context.Context, actorID, id, adminNotes, re
 	return updated, nil
 }
 
-// Start transitions an approved booking to in_use. Only allowed if today
-// (Asia/Jakarta) falls within [date, endDate].
+// Start transitions an approved booking to in_use. Allowed from its start
+// date (Asia/Jakarta) onward, so a late booking can still be completed.
 func (s *BookingService) Start(ctx context.Context, actorID, id string) (*models.Booking, error) {
 	booking, err := s.bookings.GetByID(ctx, id)
 	if err != nil {
@@ -225,8 +309,8 @@ func (s *BookingService) Start(ctx context.Context, actorID, id string) (*models
 	if booking.Status != models.BookingStatusApproved {
 		return nil, apperror.Conflict("INVALID_STATUS", "booking must be approved before it can be started")
 	}
-	if !utils.WithinInclusiveDateRange(utils.TodayJakarta(), booking.StartTime, booking.EndTime) {
-		return nil, apperror.Forbidden("NOT_START_DAY", "today is not within the booking window")
+	if utils.TodayJakarta().Before(utils.DateOnlyJakarta(booking.StartTime)) {
+		return nil, apperror.Forbidden("NOT_START_DAY", "booking can only be started from its start date")
 	}
 
 	// Mirrors the frontend's gate, enforced server-side too: a booking

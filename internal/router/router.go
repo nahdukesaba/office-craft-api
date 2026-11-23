@@ -19,13 +19,14 @@ func Setup(app *fiber.App, cfg *config.Config, pool *pgxpool.Pool, appSessions *
 	bookingRepo := repository.NewBookingRepository(pool)
 	proofRepo := repository.NewProofRepository(pool)
 	eventRepo := repository.NewBookingEventRepository(pool)
+	bookingRulesRepo := repository.NewBookingRulesRepository(pool)
 
 	emailSvc := services.NewEmailService(cfg)
 	whatsappSvc := services.NewWhatsAppService(cfg)
-	notifySvc := services.NewNotifyService(bookingRepo, userRepo, resourceRepo, emailSvc, whatsappSvc)
+	notifySvc := services.NewNotifyService(bookingRepo, userRepo, resourceRepo, emailSvc, whatsappSvc, cfg.PublicAppURL)
 	authSvc := services.NewAuthService(cfg, userRepo, notifySvc)
 	authSvc.SetBrowserSSOFlowStore(ssoFlowRepo)
-	bookingSvc := services.NewBookingService(bookingRepo, resourceRepo, userRepo, proofRepo, eventRepo, notifySvc)
+	bookingSvc := services.NewBookingService(bookingRepo, resourceRepo, userRepo, proofRepo, eventRepo, bookingRulesRepo, notifySvc)
 	proofSvc := services.NewProofService(bookingRepo)
 	reportSvc := services.NewReportService(bookingRepo, resourceRepo, userRepo)
 
@@ -43,6 +44,7 @@ func Setup(app *fiber.App, cfg *config.Config, pool *pgxpool.Pool, appSessions *
 	statsHandler := handlers.NewStatsHandler(bookingRepo, resourceRepo, userRepo)
 	userHandler := handlers.NewUserHandler(userRepo, notifySvc)
 	reportHandler := handlers.NewReportHandler(reportSvc)
+	settingsHandler := handlers.NewSettingsHandler(bookingRulesRepo)
 
 	tokenVerifier := middleware.NewTokenVerifier(cfg.SupabaseURL)
 	requireAuth := middleware.RequireAuth(tokenVerifier, userRepo)
@@ -91,6 +93,8 @@ func Setup(app *fiber.App, cfg *config.Config, pool *pgxpool.Pool, appSessions *
 	// rejected/cancelled as terminal off-ramps and needs_revision as a revision state.
 	bookings := api.Group("/bookings", requireSession, requireAuth)
 	bookings.Get("/", bookingHandler.List)
+	bookings.Get("/overdue/summary", requireAdmin, notifyHandler.OverdueSummary)
+	bookings.Post("/overdue/remind", requireAdmin, notifyHandler.RemindOverdue)
 	bookings.Get("/:id", bookingHandler.Get)
 	bookings.Post("/", bookingHandler.Create)
 	bookings.Put("/:id/approve", requireAdmin, bookingHandler.Approve)
@@ -124,4 +128,9 @@ func Setup(app *fiber.App, cfg *config.Config, pool *pgxpool.Pool, appSessions *
 	reports := api.Group("/reports", requireSession, requireAuth, requireAdmin)
 	reports.Get("/bookings/export", reportHandler.Export)
 	reports.Get("/bookings/insights", reportHandler.Insights)
+
+	// -------- Settings (admin: borrowing rule toggles) --------
+	settings := api.Group("/settings", requireSession, requireAuth, requireAdmin)
+	settings.Get("/booking-rules", settingsHandler.GetBookingRules)
+	settings.Put("/booking-rules", settingsHandler.UpdateBookingRules)
 }

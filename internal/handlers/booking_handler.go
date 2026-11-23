@@ -5,6 +5,7 @@ import (
 	"log"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -69,6 +70,7 @@ func (h *BookingHandler) List(c *fiber.Ctx) error {
 		filter.UserID = middleware.UserIDFromCtx(c)
 	} else {
 		filter.UserID = c.Query("userId")
+		filter.Search = strings.TrimSpace(c.Query("search"))
 	}
 
 	items, total, err := h.bookings.List(c.Context(), filter)

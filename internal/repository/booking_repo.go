@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -35,6 +36,7 @@ type BookingFilter struct {
 	Status     string
 	ResourceID string
 	UserID     string
+	Search     string // matches the booker's name or email
 	From       *time.Time
 	To         *time.Time
 	Page       int
@@ -224,6 +226,66 @@ func (r *BookingRepository) ApproveWithAutoReject(ctx context.Context, id string
 	return approved, autoRejectedIDs, nil
 }
 
+// ListUnfinishedByUser returns the user's started bookings that are not finished yet.
+func (r *BookingRepository) ListUnfinishedByUser(ctx context.Context, userID string) ([]models.Booking, error) {
+	query := fmt.Sprintf(`
+		SELECT %s FROM public.bookings b
+		WHERE b.user_id = $1 AND b.status = ANY($2) AND b.deleted_at IS NULL
+		ORDER BY b.start_time ASC
+	`, bookingColumns)
+	return r.queryBookings(ctx, query, userID, models.StatusesUnfinishedByUser)
+}
+
+// FindOpenUsage returns the oldest booking still holding resourceID, or nil.
+func (r *BookingRepository) FindOpenUsage(ctx context.Context, resourceID string) (*models.Booking, error) {
+	query := fmt.Sprintf(`
+		SELECT %s FROM public.bookings b
+		WHERE b.resource_id = $1
+		  AND b.deleted_at IS NULL
+		  AND (b.status = ANY($2) OR (b.status = 'approved' AND b.end_time < now()))
+		ORDER BY b.start_time ASC
+		LIMIT 1
+	`, bookingColumns)
+	out, err := r.queryBookings(ctx, query, resourceID, models.StatusesHoldingResource)
+	if err != nil || len(out) == 0 {
+		return nil, err
+	}
+	return &out[0], nil
+}
+
+// ListOverdue returns unfinished bookings whose end time has passed.
+func (r *BookingRepository) ListOverdue(ctx context.Context) ([]models.Booking, error) {
+	query := fmt.Sprintf(`
+		SELECT %s FROM public.bookings b
+		WHERE b.status = ANY($1) AND b.end_time < now() AND b.deleted_at IS NULL
+		ORDER BY b.user_id, b.start_time ASC
+	`, bookingColumns)
+	return r.queryBookings(ctx, query, models.StatusesOverdueReminder)
+}
+
+func (r *BookingRepository) queryBookings(ctx context.Context, query string, args ...interface{}) ([]models.Booking, error) {
+	rows, err := r.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []models.Booking
+	for rows.Next() {
+		b, err := scanBooking(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *b)
+	}
+	return out, rows.Err()
+}
+
+// likeContains builds a "contains" pattern that treats % and _ in user input literally.
+func likeContains(term string) string {
+	return "%" + strings.NewReplacer(`\`, `\\`, "%", `\%`, "_", `\_`).Replace(term) + "%"
+}
+
 func (r *BookingRepository) List(ctx context.Context, f BookingFilter) ([]models.Booking, int64, error) {
 	where := "WHERE b.deleted_at IS NULL"
 	args := []interface{}{}
@@ -242,6 +304,11 @@ func (r *BookingRepository) List(ctx context.Context, f BookingFilter) ([]models
 	if f.UserID != "" {
 		where += fmt.Sprintf(" AND b.user_id = $%d", argN)
 		args = append(args, f.UserID)
+		argN++
+	}
+	if f.Search != "" {
+		where += fmt.Sprintf(` AND b.user_id IN (SELECT u.id FROM public.app_users u WHERE u.deleted_at IS NULL AND (u.full_name ILIKE $%d OR u.email ILIKE $%d))`, argN, argN)
+		args = append(args, likeContains(f.Search))
 		argN++
 	}
 	if f.From != nil {
@@ -271,7 +338,7 @@ func (r *BookingRepository) List(ctx context.Context, f BookingFilter) ([]models
 	}
 	offset := (page - 1) * pageSize
 
-	query := fmt.Sprintf(`SELECT %s FROM public.bookings b %s ORDER BY b.start_time DESC LIMIT $%d OFFSET $%d`,
+	query := fmt.Sprintf(`SELECT %s FROM public.bookings b %s ORDER BY b.start_time DESC, b.id DESC LIMIT $%d OFFSET $%d`,
 		bookingColumns, where, argN, argN+1)
 	args = append(args, pageSize, offset)
 
