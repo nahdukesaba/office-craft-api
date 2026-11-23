@@ -31,6 +31,20 @@ var StatusesBlockingNewBooking = []string{
 	BookingStatusNeedsRevision,
 }
 
+// StatusesUnfinishedByUser are started bookings the owner still has to finish.
+var StatusesUnfinishedByUser = []string{BookingStatusInUse, BookingStatusNeedsRevision}
+
+// StatusesHoldingResource keep an asset locked until an admin closes them.
+// An approved booking also holds it once its end time has passed.
+var StatusesHoldingResource = []string{
+	BookingStatusInUse, BookingStatusFinished, BookingStatusNeedsRevision,
+}
+
+// StatusesOverdueReminder are reminded once their end time has passed.
+var StatusesOverdueReminder = []string{
+	BookingStatusApproved, BookingStatusInUse, BookingStatusNeedsRevision,
+}
+
 // Booking mirrors public.bookings. Date/EndDate are derived (Asia/Jakarta
 // calendar date of StartTime/EndTime) for display convenience - they are
 // not stored columns.

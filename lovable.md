@@ -168,7 +168,7 @@ interface BookingWithDetails extends Booking {
 ```
 
 ### `GET /bookings` (auth required)
-Query params: `status`, `resourceId`, `from` (ISO date/datetime), `to`, `page` (default 1), `pageSize` (default 20). Non-admins always get only their own bookings regardless of any `userId` param; admins can pass `userId` to filter by user.
+Query params: `status`, `resourceId`, `from` (ISO date/datetime), `to`, `page` (default 1), `pageSize` (default 20). Non-admins always get only their own bookings regardless of any `userId` param; admins can pass `userId` to filter by user, and `search` to match the booker's name or email. Results are ordered by `startTime` then `id`, descending, so pages stay stable.
 
 Response `200`:
 ```ts

@@ -3,9 +3,10 @@ package models
 import "time"
 
 const (
-	ResourceTypeRoom = "room"
-	ResourceTypeCar  = "car"
-	ResourceTypeBike = "bike"
+	ResourceTypeRoom      = "room"
+	ResourceTypeCar       = "car"
+	ResourceTypeBike      = "bike"
+	ResourceTypeEquipment = "equipment"
 )
 
 // DefaultResourceColor is used when a resource is created without an

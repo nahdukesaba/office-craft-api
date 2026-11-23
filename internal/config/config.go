@@ -58,6 +58,9 @@ type Config struct {
 	MSRefreshToken string
 	SPSitePath     string // e.g. kemenpkp.sharepoint.com:/sites/DokumentasiKompuSumatera2
 	SPFolder       string
+
+	// PublicAppURL is the site root used for links in notifications.
+	PublicAppURL string
 }
 
 // SharePointEnabled reports whether Graph proof storage (OneDrive or SharePoint) is configured.
@@ -110,6 +113,8 @@ func Load() *Config {
 		MSRefreshToken: strings.TrimSpace(getEnv("MS_REFRESH_TOKEN", "")),
 		SPSitePath:     strings.TrimSpace(getEnv("SP_SITE_PATH", "")),
 		SPFolder:       strings.TrimSpace(getEnv("SP_FOLDER", "db/silapet/booking-proofs")),
+
+		PublicAppURL: strings.TrimRight(strings.TrimSpace(getEnv("PUBLIC_APP_URL", "")), "/"),
 	}
 
 	if cfg.DatabaseURL == "" {
@@ -120,6 +125,9 @@ func Load() *Config {
 	}
 	if cfg.SupabaseServiceKey == "" {
 		log.Println("SUPABASE_SERVICE_ROLE_KEY not set: server-side Supabase Storage uploads and signed URLs will be unavailable")
+	}
+	if cfg.PublicAppURL == "" {
+		log.Println("PUBLIC_APP_URL not set: notifications will have no booking links and overdue reminders are disabled")
 	}
 	if cfg.SMTPHost == "" {
 		log.Println("SMTP_HOST not set: email notifications will be logged only, not actually sent")

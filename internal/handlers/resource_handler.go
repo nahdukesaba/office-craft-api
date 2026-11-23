@@ -56,9 +56,9 @@ var hexColorPattern = regexp.MustCompile(`^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$`)
 
 func validateResourceInput(in *models.ResourceInput) error {
 	switch in.Type {
-	case models.ResourceTypeRoom, models.ResourceTypeCar, models.ResourceTypeBike:
+	case models.ResourceTypeRoom, models.ResourceTypeCar, models.ResourceTypeBike, models.ResourceTypeEquipment:
 	default:
-		return apperror.BadRequest("VALIDATION_ERROR", "type must be one of: room, car, bike")
+		return apperror.BadRequest("VALIDATION_ERROR", "type must be one of: room, car, bike, equipment")
 	}
 	if in.Name == "" {
 		return apperror.BadRequest("VALIDATION_ERROR", "name is required")

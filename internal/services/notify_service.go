@@ -8,7 +8,13 @@ import (
 	"office-craft-api/internal/models"
 	"office-craft-api/internal/repository"
 	"office-craft-api/internal/utils"
+	"strings"
+	"sync/atomic"
+	"time"
 )
+
+// overdueReminderGap spaces out bulk reminders so the WhatsApp gateway is not flooded.
+const overdueReminderGap = 2 * time.Second
 
 // notifiableStatuses gates the manual POST /bookings/:id/notify endpoint
 // only - the internal NotifyForAction path (used for auto-notify on
@@ -28,10 +34,20 @@ type NotifyService struct {
 	resources *repository.ResourceRepository
 	email     *EmailService
 	whatsapp  *WhatsAppService
+	appURL    string
+	reminding atomic.Bool
 }
 
-func NewNotifyService(bookings *repository.BookingRepository, users *repository.UserRepository, resources *repository.ResourceRepository, email *EmailService, whatsapp *WhatsAppService) *NotifyService {
-	return &NotifyService{bookings: bookings, users: users, resources: resources, email: email, whatsapp: whatsapp}
+func NewNotifyService(bookings *repository.BookingRepository, users *repository.UserRepository, resources *repository.ResourceRepository, email *EmailService, whatsapp *WhatsAppService, appURL string) *NotifyService {
+	return &NotifyService{bookings: bookings, users: users, resources: resources, email: email, whatsapp: whatsapp, appURL: appURL}
+}
+
+// bookingLink returns "" when PUBLIC_APP_URL is unset, so no message carries a broken link.
+func bookingLink(appURL, path, bookingID string) string {
+	if appURL == "" {
+		return ""
+	}
+	return appURL + path + bookingID
 }
 
 // NotifyResult reports what actually got sent, so the caller (and
@@ -112,7 +128,7 @@ func (s *NotifyService) NotifyAdminsForAction(ctx context.Context, booking model
 	}
 	resourceName := s.resourceName(ctx, booking.ResourceID)
 
-	subject, htmlBody, textBody := buildAdminNotificationContent(kind, ownerName, resourceName, booking, note)
+	subject, htmlBody, textBody := buildAdminNotificationContent(kind, ownerName, resourceName, booking, note, s.appURL)
 
 	for _, admin := range admins {
 		if err := s.email.Send(admin.Email, admin.FullName, subject, htmlBody); err != nil {
@@ -136,7 +152,7 @@ func (s *NotifyService) resourceName(ctx context.Context, resourceID string) str
 }
 
 func (s *NotifyService) send(ctx context.Context, booking models.Booking, owner *models.AppUser, resourceName, kind, note string) *NotifyResult {
-	subject, htmlBody, textBody := buildNotificationContent(kind, owner.FullName, resourceName, booking, note)
+	subject, htmlBody, textBody := buildNotificationContent(kind, owner.FullName, resourceName, booking, note, s.appURL)
 
 	result := &NotifyResult{Booking: &booking}
 
@@ -165,7 +181,7 @@ func (s *NotifyService) send(ctx context.Context, booking models.Booking, owner 
 // given notification kind ("approved", "rejected", "revoked", "in_use",
 // "finished"). textBody doubles as the WhatsApp message (plain text);
 // htmlBody is the email body. Both carry the same substance.
-func buildNotificationContent(kind, ownerName, resourceName string, booking models.Booking, note string) (string, string, string) {
+func buildNotificationContent(kind, ownerName, resourceName string, booking models.Booking, note, appURL string) (string, string, string) {
 	timeRange := formatBookingRange(booking)
 
 	var subject, mainText string
@@ -220,6 +236,14 @@ func buildNotificationContent(kind, ownerName, resourceName string, booking mode
 	if note != "" {
 		mainText += fmt.Sprintf("\n\nNote from admin: %s", note)
 	}
+	if link := bookingLink(appURL, "/my-bookings/", booking.ID); link != "" {
+		switch kind {
+		case models.BookingStatusApproved:
+			mainText += "\n\nUpload the BEFORE photo here: " + link
+		case models.BookingStatusRejected:
+			mainText += "\n\nView your booking: " + link
+		}
+	}
 
 	textBody := mainText // WhatsApp: plain text, *asterisks* render as bold in the WhatsApp client itself.
 	htmlBody := "<p>" + htmlEscapeNewlines(mainText) + "</p>"
@@ -231,7 +255,7 @@ func buildNotificationContent(kind, ownerName, resourceName string, booking mode
 // buildNotificationContent - same signature shape, different audience and
 // copy. kind is one of "requested" (new pending booking), "started", or
 // "finished".
-func buildAdminNotificationContent(kind, ownerName, resourceName string, booking models.Booking, note string) (string, string, string) {
+func buildAdminNotificationContent(kind, ownerName, resourceName string, booking models.Booking, note, appURL string) (string, string, string) {
 	timeRange := formatBookingRange(booking)
 
 	var subject, mainText string
@@ -265,11 +289,156 @@ func buildAdminNotificationContent(kind, ownerName, resourceName string, booking
 	if note != "" {
 		mainText += fmt.Sprintf("\n\nNote: %s", note)
 	}
+	if link := bookingLink(appURL, "/admin/bookings/", booking.ID); link != "" && kind == "requested" {
+		mainText += "\n\nApprove or reject here: " + link
+	}
 
 	textBody := mainText
 	htmlBody := "<p>" + htmlEscapeNewlines(mainText) + "</p>"
 
 	return subject, htmlBody, textBody
+}
+
+type overdueItem struct {
+	booking      models.Booking
+	resourceName string
+}
+
+type overdueRecipient struct {
+	user  models.AppUser
+	items []overdueItem
+}
+
+// groupOverdue builds one recipient per approved user, so each gets a single message.
+func groupOverdue(bookings []models.Booking, users map[string]*models.AppUser, resources map[string]*models.Resource) ([]overdueRecipient, models.OverdueSummary) {
+	var out []overdueRecipient
+	var summary models.OverdueSummary
+	index := map[string]int{}
+	for _, b := range bookings {
+		u := users[b.UserID]
+		if u == nil || u.Status != models.UserStatusApproved {
+			continue
+		}
+		i, seen := index[u.ID]
+		if !seen {
+			i = len(out)
+			index[u.ID] = i
+			out = append(out, overdueRecipient{user: *u})
+			if u.Phone == nil || strings.TrimSpace(*u.Phone) == "" {
+				summary.WithoutPhone++
+			}
+		}
+		name := "aset"
+		if r := resources[b.ResourceID]; r != nil {
+			name = r.Name
+		}
+		out[i].items = append(out[i].items, overdueItem{booking: b, resourceName: name})
+		summary.Bookings++
+	}
+	summary.Users = len(out)
+	return out, summary
+}
+
+func (s *NotifyService) overdueRecipients(ctx context.Context) ([]overdueRecipient, models.OverdueSummary, error) {
+	overdue, err := s.bookings.ListOverdue(ctx)
+	if err != nil || len(overdue) == 0 {
+		return nil, models.OverdueSummary{}, err
+	}
+	userIDs := make([]string, 0, len(overdue))
+	resourceIDs := make([]string, 0, len(overdue))
+	for _, b := range overdue {
+		userIDs = append(userIDs, b.UserID)
+		resourceIDs = append(resourceIDs, b.ResourceID)
+	}
+	users, err := s.users.GetByIDs(ctx, userIDs)
+	if err != nil {
+		return nil, models.OverdueSummary{}, err
+	}
+	resources, err := s.resources.GetByIDs(ctx, resourceIDs)
+	if err != nil {
+		return nil, models.OverdueSummary{}, err
+	}
+	recipients, summary := groupOverdue(overdue, users, resources)
+	return recipients, summary, nil
+}
+
+// OverdueSummary reports who a reminder would reach, for the admin's confirmation.
+func (s *NotifyService) OverdueSummary(ctx context.Context) (*models.OverdueSummary, error) {
+	_, summary, err := s.overdueRecipients(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &summary, nil
+}
+
+// RemindOverdue queues one reminder per user and returns immediately: a full
+// run can outlast the proxy timeout when the WhatsApp gateway is slow.
+func (s *NotifyService) RemindOverdue(ctx context.Context) (*models.OverdueSummary, error) {
+	if s.appURL == "" {
+		return nil, apperror.New(503, "APP_URL_NOT_CONFIGURED", "PUBLIC_APP_URL is required to send booking links")
+	}
+	if !s.reminding.CompareAndSwap(false, true) {
+		return nil, apperror.Conflict("REMINDER_RUNNING", "overdue reminders are already being sent")
+	}
+	recipients, summary, err := s.overdueRecipients(ctx)
+	if err != nil || len(recipients) == 0 {
+		s.reminding.Store(false)
+		if err != nil {
+			return nil, err
+		}
+		return &summary, nil
+	}
+
+	go func() {
+		defer s.reminding.Store(false)
+		for i, r := range recipients {
+			if i > 0 {
+				time.Sleep(overdueReminderGap)
+			}
+			s.sendOverdueReminder(context.Background(), r)
+		}
+		log.Printf("notify: overdue reminders finished (users=%d, bookings=%d)", summary.Users, summary.Bookings)
+	}()
+	return &summary, nil
+}
+
+func (s *NotifyService) sendOverdueReminder(ctx context.Context, r overdueRecipient) {
+	subject, htmlBody, textBody := buildOverdueReminder(r.user.FullName, r.items, s.appURL)
+	if err := s.email.Send(r.user.Email, r.user.FullName, subject, htmlBody); err != nil {
+		log.Printf("notify: overdue email failed (user=%s): %v", r.user.ID, err)
+	}
+	phone := ""
+	if r.user.Phone != nil {
+		phone = *r.user.Phone
+	}
+	if err := s.whatsapp.Send(ctx, phone, textBody); err != nil {
+		log.Printf("notify: overdue whatsapp failed (user=%s): %v", r.user.ID, err)
+	}
+}
+
+// buildOverdueReminder numbers the bookings only when a user has more than one.
+func buildOverdueReminder(fullName string, items []overdueItem, appURL string) (string, string, string) {
+	var body strings.Builder
+	hasUnstarted := false
+	if len(items) == 1 {
+		item := items[0]
+		fmt.Fprintf(&body, "Halo %s, peminjaman *%s* (%s) sudah melewati batas pemakaian dan belum diselesaikan.\n\nSelesaikan di sini: %s",
+			fullName, item.resourceName, formatBookingRange(item.booking), bookingLink(appURL, "/my-bookings/", item.booking.ID))
+		hasUnstarted = item.booking.Status == models.BookingStatusApproved
+	} else {
+		fmt.Fprintf(&body, "Halo %s, Anda memiliki %d peminjaman yang sudah melewati batas pemakaian dan belum diselesaikan:\n", fullName, len(items))
+		for i, item := range items {
+			fmt.Fprintf(&body, "\n%d. *%s*\n   %s\n   %s\n", i+1, item.resourceName, formatBookingRange(item.booking), bookingLink(appURL, "/my-bookings/", item.booking.ID))
+			hasUnstarted = hasUnstarted || item.booking.Status == models.BookingStatusApproved
+		}
+		body.WriteString("\nMohon segera selesaikan di sistem.")
+	}
+	if hasUnstarted {
+		body.WriteString("\n\nJika booking belum dimulai dan aset tidak jadi dipakai, mohon batalkan booking tersebut.")
+	}
+
+	text := body.String()
+	return "Pengingat: selesaikan peminjaman aset SILAPET", "<p>" + htmlEscapeNewlines(text) + "</p>", text
 }
 
 func formatBookingRange(b models.Booking) string {
