@@ -16,6 +16,10 @@ type authHandlerUserStore interface {
 	GetByID(ctx context.Context, id string) (*models.AppUser, error)
 }
 
+type authHandlerApprovedAppStore interface {
+	ListApprovedApplications(ctx context.Context, appUserID string) ([]models.ApprovedApplication, error)
+}
+
 type AuthHandler struct {
 	auth        *services.AuthService
 	users       authHandlerUserStore
@@ -319,6 +323,39 @@ func (h *AuthHandler) Me(c *fiber.Ctx) error {
 		return apperror.NotFound("USER_NOT_FOUND", "user not found")
 	}
 	return c.JSON(user)
+}
+
+func (h *AuthHandler) ApprovedApps(c *fiber.Ctx) error {
+	userID := strings.TrimSpace(middleware.UserIDFromCtx(c))
+	if userID == "" {
+		return apperror.Unauthorized("authentication required")
+	}
+	defaultLogo := "/widget/default-logo.png"
+	if h.auth != nil {
+		if base := h.auth.SSOBaseURL(); base != "" {
+			defaultLogo = base + "/widget/default-logo.png"
+		}
+	}
+	var apps []models.ApprovedApplication
+	if store, ok := h.users.(authHandlerApprovedAppStore); ok && store != nil {
+		loaded, err := store.ListApprovedApplications(c.Context(), userID)
+		if err != nil {
+			return apperror.Internal("failed to load approved applications")
+		}
+		for i := range loaded {
+			if strings.TrimSpace(loaded[i].LogoURL) == "" {
+				loaded[i].LogoURL = defaultLogo
+			}
+		}
+		apps = loaded
+	}
+	if apps == nil {
+		apps = []models.ApprovedApplication{}
+	}
+	return c.JSON(fiber.Map{
+		"defaultLogoUrl": defaultLogo,
+		"apps":           apps,
+	})
 }
 
 type changePasswordRequest struct {

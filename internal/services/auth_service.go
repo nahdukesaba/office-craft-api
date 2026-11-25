@@ -398,6 +398,13 @@ func (s *AuthService) ChangePhoneNumber(ctx context.Context, user *models.AppUse
 	return err
 }
 
+func (s *AuthService) SSOBaseURL() string {
+	if s == nil || s.cfg == nil {
+		return ""
+	}
+	return strings.TrimRight(strings.TrimSpace(s.cfg.SSOBaseURL), "/")
+}
+
 func (s *AuthService) fireRegistrationNotifications(user models.AppUser) {
 	if s.notify == nil {
 		return

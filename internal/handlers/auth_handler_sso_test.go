@@ -68,6 +68,15 @@ func (f *fakeHandlerAuthUsers) UpdatePhone(
 	return f.user, nil
 }
 
+func (f *fakeHandlerAuthUsers) ListApprovedApplications(
+	_ context.Context,
+	_ string,
+) ([]models.ApprovedApplication, error) {
+	return []models.ApprovedApplication{
+		{Code: "silapet", Name: "SILAPET", LaunchURL: "http://localhost:8081/api/auth/sso/start"},
+	}, nil
+}
+
 type noopHandlerAuthNotifier struct{}
 
 func (noopHandlerAuthNotifier) NotifyAdminsForUserEvent(
@@ -557,6 +566,39 @@ func TestMeResolvesInternalAppUserID(t *testing.T) {
 		if _, exists := payload[forbidden]; exists {
 			t.Fatalf("current user response exposed %q", forbidden)
 		}
+	}
+}
+
+func TestApprovedAppsRequiresAuthenticatedUserAndReturnsApprovedApps(t *testing.T) {
+	users := &fakeHandlerAuthUsers{user: &models.AppUser{
+		ID:     handlerTestAppUserID,
+		Email:  "employee@example.com",
+		Role:   models.RoleUser,
+		Status: models.UserStatusApproved,
+	}}
+	authService := services.NewAuthService(&config.Config{SSOBaseURL: "http://localhost:8082"}, users, noopHandlerAuthNotifier{})
+	handler := NewAuthHandler(authService, users)
+	app := fiber.New()
+	app.Get(
+		"/api/auth/apps",
+		func(c *fiber.Ctx) error {
+			c.Locals(middleware.LocalsUserID, handlerTestAppUserID)
+			return c.Next()
+		},
+		handler.ApprovedApps,
+	)
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/api/auth/apps", nil))
+	if err != nil {
+		t.Fatalf("perform approved apps request: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), `"code":"silapet"`) || !strings.Contains(string(body), `"logoUrl":"http://localhost:8082/widget/default-logo.png"`) {
+		t.Fatalf("unexpected approved apps response: %s", string(body))
 	}
 }
 
