@@ -35,3 +35,10 @@ const (
 	UserStatusRejected = "rejected"
 	UserStatusDisabled = "disabled"
 )
+
+type ApprovedApplication struct {
+	Code      string `json:"code"`
+	Name      string `json:"name"`
+	LaunchURL string `json:"launchUrl"`
+	LogoURL   string `json:"logoUrl"`
+}
